@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Kiwi/Edge Canary/Firefox）
 
-> 版本：0.2.4 · 安装包见 [Releases](../../releases)
+> 版本：0.2.5 · 安装包见 [Releases](../../releases)
 
 ---
 

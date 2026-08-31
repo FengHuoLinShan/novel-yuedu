@@ -1006,6 +1006,11 @@
     _restoreProgress() {
       const state = this.state;
       const key = this._bookKey();
+      // 扩展上下文已失效（扩展被刷新/更新）：storage 调用会同步抛
+      // "Extension context invalidated"（末尾 .catch 拦不住同步 throw），
+      // 跳过进度恢复即可，阅读模式照常进入
+      if (!NR.extAlive()) return;
+      try {
       chrome.storage.local
         .get('progress')
         .then((store) => {
@@ -1034,6 +1039,9 @@
           }
         })
         .catch(() => {});
+      } catch (e) {
+        /* extAlive 检查与实际调用之间上下文失效的竞态：同样跳过恢复 */
+      }
     },
 
     /** 跨章节续读提示条：正文顶部显示上次读到的章节，点击跳回 */

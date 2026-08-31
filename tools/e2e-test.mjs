@@ -54,9 +54,11 @@ class CDP {
     });
     return new CDP(ws);
   }
-  send(method, params = {}) {
+  send(method, params = {}, sessionId) {
     const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
+    const msg = { id, method, params };
+    if (sessionId) msg.sessionId = sessionId;
+    this.ws.send(JSON.stringify(msg));
     return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
   }
   async waitEvent(method, timeout = 15000) {
@@ -413,6 +415,53 @@ try {
   check('提示条点击跳回上次章节', chipJump === '第三章 剑出如虹', String(chipJump));
   await evalJs(cdp4, `(()=>{const h=document.getElementById('novel-reader-host');if(h)window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));})()`);
   await cdp4.ws.close();
+
+  // ============ 测试五：扩展重载后孤儿内容脚本不抛 "Extension context invalidated" ============
+  console.log('\n[测试五] 扩展重载（孤儿内容脚本）后再次进入阅读模式');
+  const cdp5 = await openPage(`${BASE}/utf8site/1.html`);
+  const ctx5 = cdp5.isolatedContextId();
+  check('内容脚本隔离世界可用（五）', ctx5 != null);
+  // 在隔离世界记录未处理的 Promise 拒绝（复现用户控制台的 Uncaught 报错）
+  await evalJs(cdp5, `window.__nrRejects=[];window.addEventListener('unhandledrejection',e=>{window.__nrRejects.push(String((e.reason&&e.reason.message)||e.reason))})`, ctx5);
+  // 主世界记录 opened 事件（open() 完整走完才会派发）
+  await evalJs(cdp5, `window.__nrOpened5=false;document.addEventListener('novelreader:opened',()=>{window.__nrOpened5=true})`);
+
+  // 通过 service worker 执行 chrome.runtime.reload()，真实复现“扩展更新/重载后旧页面内容脚本失效”
+  let orphaned = false;
+  try {
+    const ver = await fetch(`http://127.0.0.1:${PORT}/json/version`).then((r) => r.json());
+    const browserCdp = await CDP.connect(ver.webSocketDebuggerUrl);
+    await browserCdp.send('Target.setDiscoverTargets', { discover: true });
+    let swTargetId = null;
+    for (let i = 0; i < 50 && !swTargetId; i++) {
+      const ev = await browserCdp.waitEvent('Target.targetCreated', 1000).catch(() => null);
+      if (ev && ev.params.targetInfo.type === 'service_worker') swTargetId = ev.params.targetInfo.targetId;
+    }
+    if (swTargetId) {
+      const { sessionId } = await browserCdp.send('Target.attachToTarget', { targetId: swTargetId, flatten: true });
+      await Promise.race([
+        browserCdp.send('Runtime.evaluate', { expression: 'chrome.runtime.reload(); "reloading"' }, sessionId).catch(() => {}),
+        sleep(4000)
+      ]);
+    }
+    for (let i = 0; i < 20; i++) {
+      await sleep(300);
+      if (!(await evalJs(cdp5, `NR.extAlive()`, ctx5).catch(() => true))) { orphaned = true; break; }
+    }
+  } catch (e) { /* 重载失败时跳过本组断言 */ }
+  check('扩展重载后旧页面内容脚本成为孤儿（chrome 上下文失效）', orphaned);
+
+  // 孤儿页面点击悬浮按钮 → 阅读模式应照常打开且流程完整，不再产生未处理拒绝
+  await evalJs(cdp5, `(document.getElementById('novel-reader-float-btn')||{click(){}}).click()`);
+  await sleep(1200);
+  const reopened5 = await evalJs(cdp5, `!!document.getElementById('novel-reader-host')`);
+  check('孤儿页面仍可进入阅读模式', reopened5);
+  check('进入流程完整（opened 事件已派发）', await evalJs(cdp5, `window.__nrOpened5`));
+  const rejects5 = await evalJs(cdp5, `window.__nrRejects.slice()`, ctx5);
+  check('无 "Extension context invalidated" 未处理拒绝', !rejects5 || !rejects5.some((t) => /invalidated/i.test(t)), JSON.stringify(rejects5));
+  await evalJs(cdp5, `(()=>{const h=document.getElementById('novel-reader-host');if(h)window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));})()`);
+  await sleep(500);
+  await cdp5.ws.close();
 } catch (e) {
   failed++;
   console.error('异常：', e.message);
