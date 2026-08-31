@@ -1,0 +1,64 @@
+{
+  "$comment": "小说悦读站点规则表。generic 对所有站点生效（按顺序取第一个命中的选择器）；sites 数组按 match 正则（对完整 URL 匹配）命中后覆盖 generic 的同名字段。所有字段都是数组，按顺序回退。选择器命中但正文文本量不足时会继续回退，因此写错不致命。",
+  "generic": {
+    "contentSelector": [
+      "#content", "#contents", "#content1", "#content2", "#txtContent",
+      "#chaptercontent", "#chapter_content", "#chapterContent", "#htmlContent",
+      "#booktxt", "#BookText", "#articlecontent", "#articleContent",
+      "#nr", "#nr1", "#txt", "#TXT", "#f_ch", "#mainContent",
+      ".noveltext", ".novel_content", ".read-content", ".readcontent",
+      ".showtxt", ".txtnav", ".article-content", ".article_content",
+      ".bookreadercontent", ".content_read", ".chapter-content", ".chaptercontent",
+      ".content", ".text", "article"
+    ],
+    "titleSelector": [
+      ".bookname h1", ".bookname h2", "h1.zhangjieming", ".zhangjieming", ".nr_title",
+      ".chapter-title", "#chapterTitle", ".title", "#title", "h2.title", "h1", "h2"
+    ],
+    "contentRemove": [
+      "script", "style", "iframe", "ins", "noscript",
+      ".ad", ".ads", ".adsbygoogle", ".contentadv", "#contentadv",
+      ".tip", ".jiathis_style", ".bdshare", ".share", ".a_key", ".bottom-ad"
+    ],
+    "nextSelector": ["#pb_next", "a.next", ".next a", "#linkNext", "#pager_next", ".page_next", "a[rel='next']"],
+    "prevSelector": ["#pb_prev", "a.prev", ".prev a", "#linkPrev", ".page_prev", "a[rel='prev']"],
+    "indexSelector": ["a[href='index.html']", "a.mulu", ".back"]
+  },
+  "sites": [
+    {
+      "name": "起点中文网",
+      "match": "qidian\\.com|qidian\\.com\\.cn",
+      "contentSelector": [".read-content.j_readContent", ".read-content"],
+      "titleSelector": ["h2.chapter-title", "h1", "h2"],
+      "contentRemove": [".dtps", ".j_growable", ".review-author", "p.ad", ".dopt"],
+      "nextSelector": ["#j_chapterNext", "a#j_chapterNext"],
+      "prevSelector": ["#j_chapterPrev", "a#j_chapterPrev"]
+    },
+    {
+      "name": "番茄小说",
+      "match": "fanqienovel\\.com",
+      "contentSelector": [".muye-reader-content", ".reader-content", "#chapter-content"],
+      "titleSelector": [".reader-header h1", "h1", "h2"],
+      "contentRemove": [".reader-footer", ".reader-toolbar"]
+    },
+    {
+      "name": "晋江文学城",
+      "match": "jjwxc\\.net",
+      "contentSelector": [".noveltext"],
+      "titleSelector": [".noveltext h2", "h2"],
+      "contentRemove": [".noveltext .copyright", ".lock"]
+    },
+    {
+      "name": "纵横中文网",
+      "match": "zongheng\\.com",
+      "contentSelector": [".read-content", "#chapterContent"],
+      "titleSelector": [".title_txtbox h1", "h1"]
+    },
+    {
+      "name": "17K",
+      "match": "17k\\.com",
+      "contentSelector": ["#articleContent", ".read_area"],
+      "titleSelector": [".read_area h1", "h1"]
+    }
+  ]
+}

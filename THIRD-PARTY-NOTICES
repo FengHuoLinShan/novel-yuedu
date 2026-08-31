@@ -1,0 +1,20 @@
+# Third-Party Notices
+
+本扩展内置（vendored）以下第三方库，未做功能性修改。各库的完整许可证文本可在对应源文件头部或下方链接查看。
+
+## 1. Readability & Readability-readerable
+
+- 来源：https://github.com/mozilla/readability
+- 文件：`src/lib/Readability.js`、`src/lib/Readability-readerable.js`
+- 版权：Copyright (c) 2010 Arc90 Inc
+- 许可证：Apache License 2.0
+  https://www.apache.org/licenses/LICENSE-2.0
+
+## 2. DOMPurify
+
+- 来源：https://github.com/cure53/DOMPurify
+- 文件：`src/lib/purify.min.js`（版本 3.2.6）
+- 版权：Copyright (c) Cure53 and other contributors
+- 许可证：Apache License 2.0 或 Mozilla Public License 2.0（双重许可，本项目按 Apache-2.0 使用）
+  https://www.apache.org/licenses/LICENSE-2.0
+  https://www.mozilla.org/media/MPL/2.0/index.txt

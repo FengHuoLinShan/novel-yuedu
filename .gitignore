@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# 本地工具/编辑器
+.zcode/
+
+# Chrome 打包时生成的元数据
+_metadata/
+
+# 打包产物（作为 GitHub Release 附件分发，不入库）
+dist/
+
+# 依赖与缓存
+node_modules/
+__pycache__/
+*.pyc
