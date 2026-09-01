@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.7 · 安装包见 [Releases](../../releases)
+> 版本：0.2.8 · 安装包见 [Releases](../../releases)
 
 ---
 

@@ -358,7 +358,7 @@ try {
   const autoOpened = await evalJs(cdp4, `(()=>{const h=document.getElementById('novel-reader-host');if(!h)return 'no';return h.shadowRoot.querySelector('.nr-ch-title').textContent;})()`);
   check('pendingOpen 落地自动进入阅读模式', autoOpened === '第三章 剑出如虹', String(autoOpened));
 
-  // 3) 目录面板：列表、当前章高亮、搜索过滤、点击跳转
+  // 3) 目录面板：列表、当前章高亮、搜索唯一命中定位、点击跳转
   await evalJs(cdp4, `document.getElementById('novel-reader-host').shadowRoot.querySelector('[data-act="catalog"]').click()`);
   await sleep(2000); // 目录页 fetch + 解析
   const catOpen = await evalJs(cdp4, `document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-root').classList.contains('nr-catalog-open')`);
@@ -368,10 +368,10 @@ try {
 
   await evalJs(cdp4, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const s=sr.querySelector('.nr-catalog-search');s.value='二';s.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await sleep(300);
-  const filtered = JSON.parse(await evalJs(cdp4, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const items=[...sr.querySelectorAll('.nr-cat-item')];return JSON.stringify({count:items.length, first:items[0]?items[0].textContent:''});})()`));
-  check('搜索“二”过滤到 1 章', filtered.count === 1 && filtered.first.indexOf('第二章') === 0, JSON.stringify(filtered));
+  const filtered = JSON.parse(await evalJs(cdp4, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const items=[...sr.querySelectorAll('.nr-cat-item')];const hit=sr.querySelector('.nr-cat-item.nr-hit');return JSON.stringify({count:items.length, hit:hit?hit.textContent:'', counter:sr.querySelector('.nr-cat-count').textContent});})()`));
+  check('搜索“二”唯一命中：保留全量列表并标记定位', filtered.count === 3 && (filtered.hit || '').indexOf('第二章') === 0 && filtered.counter.indexOf('已定位') >= 0, JSON.stringify(filtered));
 
-  await evalJs(cdp4, `document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-cat-item').click()`);
+  await evalJs(cdp4, `document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-cat-item.nr-hit').click()`);
   await cdp4.waitEvent('Page.loadEventFired', 20000).catch(() => {});
   await sleep(3500);
   const jumped = await evalJs(cdp4, `(()=>{const h=document.getElementById('novel-reader-host');if(!h)return 'no:'+location.pathname;return h.shadowRoot.querySelector('.nr-ch-title').textContent;})()`);
