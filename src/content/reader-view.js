@@ -4,7 +4,7 @@
  * - 开放 Shadow DOM + 内部容器 all:initial，彻底隔离原站 CSS
  * - 原 body 隐藏但保留 DOM，退出后完整还原原页面
  * - 章节滚动拼接（瀑布流）+ 快捷键翻章 + 按书记忆阅读进度
- * - 地址栏通过 pushState 跟随当前章节，刷新后配合进度记忆可回到原位
+ * - 地址栏通过 replaceState 跟随当前章节（不污染浏览器历史），刷新后配合进度记忆可回到原位
  */
 (function () {
   'use strict';
@@ -14,6 +14,7 @@
   const PREFETCH_DEPTH = 2;
   const MAX_DOM_CHAPTERS = 12; // DOM 中最多保留的章节数（防内存膨胀）
   const KEEP_BEHIND = 5; // 当前章之后回收，当前章之前保留几章
+  const KEEP_AHEAD = MAX_DOM_CHAPTERS - KEEP_BEHIND - 1; // 回翻时当前章之后保留几章（窗口对称滑动）
   const PROGRESS_THROTTLE = 1500;
   const CATALOG_RENDER_CAP = 3000; // 目录渲染条数上限，与 parseCatalog 的 3000 解析上限对齐（超长完本书也能翻到尾章）
 
@@ -186,11 +187,24 @@
     isOpen: false,
     state: null,
     rootEl: null,
+    _openPromise: null,
 
     // ---------------- 生命周期 ----------------
 
-    async open() {
-      if (this.isOpen) return true;
+    /**
+     * 打开阅读视图。getSettings/extractDoc 期间可能被悬浮按钮、快捷键、消息并发重入，
+     * 共享同一个打开 Promise：并发调用只构建一套 UI / state / 监听器。
+     */
+    open() {
+      if (this.isOpen) return Promise.resolve(true);
+      if (this._openPromise) return this._openPromise;
+      this._openPromise = this._doOpen().finally(() => {
+        this._openPromise = null;
+      });
+      return this._openPromise;
+    },
+
+    async _doOpen() {
       if (!/^https?:$/.test(location.protocol)) {
         NR.toast('此页面不支持阅读模式');
         return false;
@@ -208,6 +222,8 @@
         chapters: [], // [{data, el}]
         currentIndex: 0,
         appending: false,
+        appendingUrl: null, // 正在拼接的 URL（同 URL 并发去重）
+        appendingPromise: null,
         tailError: false,
         inputFocus: false,
         lastScrollTop: 0,
@@ -228,7 +244,7 @@
       this._appendChapter(chapter);
       this._renderTail();
       this._startPrefetch();
-      this._syncDnr(true);
+      this._syncDnr(!!NR.settings.blockAdsOnRead); // 是否注册会话级拦截跟随设置，而非无条件开启
       this._restoreProgress();
 
       document.dispatchEvent(new CustomEvent('novelreader:opened'));
@@ -253,7 +269,8 @@
       if (state.host && state.host.isConnected) state.host.remove();
       if (location.href !== state.originalUrl) {
         try {
-          history.pushState(null, '', state.originalUrl);
+          // 替换而非新增历史条目：退出不应在浏览器历史里留下章节地址
+          history.replaceState(null, '', state.originalUrl);
         } catch (e) {
           /* 跨域异常忽略 */
         }
@@ -262,6 +279,15 @@
       this.state = null;
       this.rootEl = null;
       document.dispatchEvent(new CustomEvent('novelreader:closed'));
+    },
+
+    /**
+     * 异步边界存活检查：reader 仍打开且 state 仍是当前会话的那份。
+     * 章节/目录/进度等 await 之后必须先过此检查再继续，防止旧会话的
+     * 异步任务回写已关闭或已重开的新会话（"reader state is gone" 类错误的根源）。
+     */
+    _alive(state) {
+      return !!(state && this.isOpen && this.state === state);
     },
 
     // ---------------- UI 构建 ----------------
@@ -466,10 +492,11 @@
       this._renderCatalogLoading();
       try {
         const doc = await NR.loader.fetchDoc(indexUrl);
+        if (!this._alive(state)) return; // 加载期间已退出/重开：丢弃结果，不回写
         state.catalogList = NR.parseCatalog(doc, indexUrl, state.originalUrl);
         this._renderCatalogList('');
       } catch (e) {
-        this._renderCatalogError('目录加载失败');
+        if (this._alive(state)) this._renderCatalogError('目录加载失败');
       } finally {
         state.catalogLoading = false;
       }
@@ -545,7 +572,16 @@
       }
     },
 
-    /** 跳转到指定章节：写 pendingOpen 标记后导航，新页面自动进入阅读模式（jump 意图：不恢复旧位置） */
+    /**
+     * 写跳转标记：每个目标 URL 一条独立 storage key（po:<url>），
+     * 两个标签页同时跳不同章节互不覆盖，落地页只消费自己命中的条目。
+     */
+    _setPendingOpen(url, intent) {
+      const key = 'po:' + String(url).split('#')[0];
+      return chrome.storage.local.set({ [key]: { url: url, ts: Date.now(), intent: intent } });
+    },
+
+    /** 跳转到指定章节：写跳转标记后导航，新页面自动进入阅读模式（jump 意图：不恢复旧位置） */
     _jumpTo(url) {
       if (!url || !this.isOpen) return;
       this._saveProgressNow();
@@ -559,7 +595,7 @@
       NR.toast('正在跳转…', 900);
       const go = () => setTimeout(() => location.assign(url), 150);
       try {
-        chrome.storage.local.set({ pendingOpen: { url: url, ts: Date.now(), intent: 'jump' } }).then(go, go);
+        this._setPendingOpen(url, 'jump').then(go, go);
       } catch (e) {
         go();
       }
@@ -632,24 +668,45 @@
       return state.chapters.length - 1;
     },
 
-    /** 追加已收起章节（往回翻时从缓存重建） */
-    _insertChapterBefore(chapter, refChapter) {
-      const state = this.state;
-      const el = this._buildChapterEl(chapter);
-      state.pages.insertBefore(el, refChapter.el);
-      const idx = state.chapters.findIndex((c) => c.data.url === refChapter.data.url);
-      state.chapters.splice(idx, 0, { data: chapter, el });
-      return idx;
+    /** 该章节记录是否还持有完整正文（收起时会被裁剪成纯导航元数据） */
+    _hasFullData(c) {
+      return !!(c && c.data && c.data.paragraphs && c.data.paragraphs.length);
+    },
+
+    /**
+     * DOM 中最后一章（数组末尾可能是被收起的纯元数据记录）。
+     * 前进拼接、尾部提示、预取都必须以它为锚，否则回翻后继续前读会跳过中间章节。
+     */
+    _lastRendered() {
+      const chapters = this.state.chapters;
+      for (let i = chapters.length - 1; i >= 0; i--) {
+        if (chapters[i].el) return chapters[i];
+      }
+      return null;
+    },
+
+    /** 裁剪为可回翻的最小元数据：正文段落/图片不随历史章数驻留内存 */
+    _chapterMeta(data) {
+      return {
+        url: data.url,
+        title: data.title,
+        bookTitle: data.bookTitle,
+        indexUrl: data.indexUrl,
+        prevUrl: data.prevUrl,
+        nextUrl: data.nextUrl
+      };
     },
 
     _trimChapters() {
       const state = this.state;
       if (state.chapters.length <= MAX_DOM_CHAPTERS) return;
       const minKeep = Math.max(0, state.currentIndex - KEEP_BEHIND);
-      // 被收起的章节都在视口上方：移除后内容变短，浏览器会把越界的 scrollTop 钳位到
+      const maxKeep = Math.min(state.chapters.length - 1, state.currentIndex + KEEP_AHEAD);
+      // 被收起的上方章节：移除后内容变短，浏览器会把越界的 scrollTop 钳位到
       // 新的最大值（阅读中拼接下一章时必然越界）→ 视口跳到新章末尾，需往回翻页找进度。
       // 因此必须在移除前记下滚动位置，移除后按当前章元素的实际位移回退，让视口内容原地不动。
-      // （原生滚动锚定已用 overflow-anchor 关闭，此补偿是唯一位移来源）
+      // （原生滚动锚定已用 overflow-anchor 关闭，此补偿是唯一位移来源；
+      //   下方章节的移除不影响 offsetTop，无需补偿）
       const scroller = state.scroller;
       const stBefore = scroller.scrollTop;
       const heightBefore = scroller.scrollHeight;
@@ -662,8 +719,18 @@
         if (c.el) {
           c.el.remove();
           c.el = null;
+          c.data = this._chapterMeta(c.data);
           state.collapsedCount++;
           removedAny = true;
+        }
+      }
+      // 回翻场景：窗口后方（远于 KEEP_AHEAD）的章节同样收起，DOM 不随回翻章数增长
+      for (let i = state.chapters.length - 1; i > maxKeep; i--) {
+        const c = state.chapters[i];
+        if (c.el) {
+          c.el.remove();
+          c.el = null;
+          c.data = this._chapterMeta(c.data);
         }
       }
       if (state.collapsedCount > 0 && !state.collapsedNote) {
@@ -675,7 +742,9 @@
       if (state.collapsedNote) {
         state.collapsedNote.textContent = '已收起前 ' + state.collapsedCount + ' 章（按 ← 可翻回）';
       }
-      NR.loader.prune(state.chapters.map((c) => c.data.url));
+      // 只锁定窗口内仍持正文的章节：被裁剪的历史章节允许从 loader 缓存淘汰，
+      // 否则成功缓存会随阅读章数线性增长
+      NR.loader.prune(state.chapters.filter((c) => c.el).map((c) => c.data.url));
       if (removedAny) {
         // 用当前章元素的实际位移回滚：比 scrollHeight 差值更准，不受下方 :last-child
         // 外距、尾部提示等与阅读位置无关的高度变化影响
@@ -694,7 +763,7 @@
       } else {
         tail.style.minHeight = '';
       }
-      const last = state.chapters[state.chapters.length - 1];
+      const last = this._lastRendered();
       tail.textContent = '';
       if (state.appending) {
         const spin = document.createElement('span');
@@ -739,61 +808,103 @@
 
     // ---------------- 翻章与拼接 ----------------
 
-    /** 返回目标章节下标；失败返回 -1 */
+    /**
+     * 返回目标章节下标；失败返回 -1。
+     * 同一 URL 的并发调用（慢网连点下一章、按钮/键盘/自动拼接同时到达）共享同一次
+     * 拼接 Promise，只渲染一章；用户主动重试已失败章节的语义不变（失败后标记即清除）。
+     */
     async _appendByUrl(url, scroll) {
       const state = this.state;
       if (!url) return -1;
       const exist = state.chapters.find((c) => c.data.url === url);
       if (exist) {
-        if (!exist.el) this._rerenderCollapsed(url);
+        if (!exist.el) await this._rerenderCollapsed(url);
         if (scroll) this._scrollToChapter(url);
         return state.chapters.indexOf(exist);
       }
+      if (state.appendingUrl === url && state.appendingPromise) return state.appendingPromise;
       state.appending = true;
+      state.appendingUrl = url;
       this._renderTail();
       // scroll=true 即用户主动操作（翻章/点重试）：清除失败熔断再请求，弱网下瞬断可恢复
       if (scroll) NR.loader.clearFail(url);
-      try {
-        const chapter = await NR.loader.getChapter(url);
-        const idx = this._appendChapter(chapter);
-        state.tailError = false;
-        this._startPrefetch();
-        if (scroll) this._scrollToChapter(url);
-        return idx;
-      } catch (e) {
-        state.tailError = true;
-        return -1;
-      } finally {
-        state.appending = false;
-        this._renderTail();
-      }
+      const promise = (async () => {
+        try {
+          const chapter = await NR.loader.getChapter(url);
+          if (!this._alive(state)) return -1; // 等待期间已退出/重开：丢弃，不回写新会话
+          const idx = this._appendChapter(chapter);
+          state.tailError = false;
+          this._startPrefetch();
+          if (scroll) this._scrollToChapter(url);
+          return idx;
+        } catch (e) {
+          if (this._alive(state)) state.tailError = true;
+          return -1;
+        } finally {
+          state.appending = false;
+          state.appendingUrl = null;
+          state.appendingPromise = null;
+          if (this._alive(state)) this._renderTail();
+        }
+      })();
+      state.appendingPromise = promise;
+      return promise;
     },
 
-    _rerenderCollapsed(url) {
+    /**
+     * 恢复已收起的章节：只重建 DOM 并回填原记录的 el，不向 state.chapters 插入新记录
+     * （否则同 URL 记录被复制，回翻会反复命中空记录卡在同一章）。
+     * 正文已被裁剪成元数据时先按需重载。返回是否恢复成功。
+     */
+    async _rerenderCollapsed(url) {
       const state = this.state;
       const idx = state.chapters.findIndex((c) => c.data.url === url && !c.el);
-      if (idx < 0) return;
+      if (idx < 0) return true; // 已恢复或不存在
+      if (!this._hasFullData(state.chapters[idx])) {
+        try {
+          const chapter = await NR.loader.getChapter(url);
+          if (!this._alive(state)) return false;
+          // 原记录里的导航元数据更贴近当次阅读链路，新解析缺失时回填保留
+          chapter.indexUrl = chapter.indexUrl || state.chapters[idx].data.indexUrl;
+          chapter.prevUrl = chapter.prevUrl || state.chapters[idx].data.prevUrl;
+          chapter.nextUrl = chapter.nextUrl || state.chapters[idx].data.nextUrl;
+          state.chapters[idx].data = chapter;
+        } catch (e) {
+          if (this._alive(state)) NR.toast('章节加载失败，请重试', 1600);
+          return false;
+        }
+      }
+      const rec = state.chapters[idx];
+      if (rec.el) return true; // 并发恢复时后完成者直接复用先完成者插入的 DOM
+      const el = this._buildChapterEl(rec.data);
       let refIdx = idx + 1;
       while (refIdx < state.chapters.length && !state.chapters[refIdx].el) refIdx++;
-      if (refIdx < state.chapters.length) {
-        this._insertChapterBefore(state.chapters[idx].data, state.chapters[refIdx]);
-      } else {
-        state.chapters[idx].el = this._buildChapterEl(state.chapters[idx].data);
-        state.pages.appendChild(state.chapters[idx].el);
-      }
+      if (refIdx < state.chapters.length) state.pages.insertBefore(el, state.chapters[refIdx].el);
+      else state.pages.appendChild(el);
+      rec.el = el;
+      this._trimChapters();
       if (state.collapsedCount > 0) state.collapsedCount--;
       if (state.collapsedCount === 0 && state.collapsedNote) {
         state.collapsedNote.remove();
         state.collapsedNote = null;
       }
+      return true;
     },
 
     _scrollToChapter(url) {
       const state = this.state;
-      const target = state.chapters.find((c) => c.data.url === url && c.el);
-      if (!target) return;
+      const idx = state.chapters.findIndex((c) => c.data.url === url && c.el);
+      if (idx < 0) return;
+      const el = state.chapters[idx].el;
       requestAnimationFrame(() => {
-        state.scroller.scrollTo({ top: Math.max(0, target.el.offsetTop - 24), behavior: 'auto' });
+        if (!this._alive(state)) return;
+        state.scroller.scrollTo({ top: Math.max(0, el.offsetTop - 24), behavior: 'auto' });
+        // 回翻恢复的章节插回后，目标滚动位置可能与当前 scrollTop 完全重合，
+        // 浏览器对"滚到原位"不派发 scroll 事件 → 显式导航必须自行推进当前章判定
+        if (state.currentIndex !== idx) {
+          state.currentIndex = idx;
+          this._onCurrentChanged();
+        }
       });
     },
 
@@ -818,7 +929,15 @@
       const curIdx = state.currentIndex;
       if (curIdx > 0) {
         const prev = state.chapters[curIdx - 1];
-        if (!prev.el) this._rerenderCollapsed(prev.data.url);
+        if (!prev.el) {
+          // 章节可能已被裁剪正文，需要按需重载（异步）；失败提示后停留原章
+          this._rerenderCollapsed(prev.data.url)
+            .then((ok) => {
+              if (ok && this._alive(state)) this._scrollToChapter(prev.data.url);
+            })
+            .catch(() => {});
+          return;
+        }
         this._scrollToChapter(prev.data.url);
         return;
       }
@@ -828,7 +947,7 @@
         NR.toast('正在返回上一章…', 1000);
         const go = () => setTimeout(() => location.assign(prevUrl), 200);
         try {
-          chrome.storage.local.set({ pendingOpen: { url: prevUrl, ts: Date.now(), intent: 'jump' } }).then(go, go);
+          this._setPendingOpen(prevUrl, 'jump').then(go, go);
         } catch (e) {
           go();
         }
@@ -870,7 +989,7 @@
       // 距底阈值：自动拼接 / 预取
       const remaining = scroller.scrollHeight - st - scroller.clientHeight;
       if (remaining < APPEND_THRESHOLD_PX) {
-        const last = state.chapters[state.chapters.length - 1];
+        const last = this._lastRendered();
         if (last && last.data.nextUrl && NR.settings.autoAppend && !state.appending && !state.tailError) {
           this._appendByUrl(last.data.nextUrl, false);
         }
@@ -892,7 +1011,8 @@
       if (cur.data.bookTitle) state.headerBook.textContent = cur.data.bookTitle;
       if (cur.data.url && cur.data.url !== location.href) {
         try {
-          history.pushState(null, '', cur.data.url);
+          // 地址栏只做展示跟随：替换当前条目而非压栈，跨章往返不污染浏览器历史
+          history.replaceState(null, '', cur.data.url);
         } catch (e) {
           /* 忽略 */
         }
@@ -935,7 +1055,7 @@
     _startPrefetch() {
       if (!NR.settings.preload) return;
       const state = this.state;
-      const last = state.chapters[state.chapters.length - 1];
+      const last = this._lastRendered();
       if (last) NR.loader.prefetchFrom(last.data.url, PREFETCH_DEPTH).catch(() => {});
     },
 
@@ -1008,21 +1128,46 @@
         ts: Date.now()
       };
       const key = this._bookKey();
-      try {
-        chrome.storage.local.get('progress').then((store) => {
-          const progress = store.progress || {};
-          progress[key] = record;
-          const keys = Object.keys(progress);
-          if (keys.length > 200) {
-            // 淘汰最久未读
-            keys.sort((a, b) => progress[a].ts - progress[b].ts);
-            for (const k of keys.slice(0, keys.length - 200)) delete progress[k];
-          }
-          chrome.storage.local.set({ progress }).catch(() => {});
-        }).catch(() => {});
-      } catch (e) {
-        this._notifyExtDead();
+      // 同一内容脚本内的写入串行化：保证本页 ts 单调、get→set 不自交错
+      this._progressChain = (this._progressChain || Promise.resolve())
+        .then(() => this._writeProgressRecord(key, record))
+        .catch(() => {});
+    },
+
+    /**
+     * 每本书独立 storage key（p:<书键>）。旧版整包 progress 是"读全量—改一条—写全量"，
+     * 两个标签页同时保存会互相覆盖对方的新记录；拆 key 后各写各的书，天然无冲突。
+     * 首次写入时把旧版整包数据迁移为独立 key（幂等，多标签页并发迁移结果一致）。
+     */
+    async _writeProgressRecord(bookKey, record) {
+      const store = await chrome.storage.local.get(['progress', 'p:' + bookKey]);
+      const legacy = store.progress;
+      const setOps = {};
+      if (legacy && typeof legacy === 'object') {
+        for (const k of Object.keys(legacy)) {
+          const v = legacy[k];
+          if (v && v.url) setOps['p:' + k] = v;
+        }
       }
+      setOps['p:' + bookKey] = record;
+      await chrome.storage.local.set(setOps);
+      if (legacy) await chrome.storage.local.remove('progress');
+      this._evictProgressBooks();
+    },
+
+    /** 超过 200 本时淘汰最久未读（节流执行，避免每次保存全量扫描） */
+    async _evictProgressBooks() {
+      const now = Date.now();
+      if (this._lastEvictAt && now - this._lastEvictAt < 30000) return;
+      this._lastEvictAt = now;
+      const all = await chrome.storage.local.get(null);
+      const entries = [];
+      for (const k of Object.keys(all)) {
+        if (k.indexOf('p:') === 0 && all[k] && all[k].url) entries.push([k, all[k]]);
+      }
+      if (entries.length <= 200) return;
+      entries.sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0));
+      await chrome.storage.local.remove(entries.slice(0, entries.length - 200).map((e) => e[0]));
     },
 
     /** 扩展上下文失效提示（每次阅读会话只提示一次） */
@@ -1041,34 +1186,48 @@
       // 跳过进度恢复即可，阅读模式照常进入
       if (!NR.extAlive()) return;
       try {
-      chrome.storage.local
-        .get('progress')
-        .then((store) => {
-          if (!this.isOpen || !this.state) return;
-          // 分书籍：先精确命中书键，未命中按章节 URL 目录归并（防目录识别漂移导致同书分裂）
-          const record = NR.findBookRecord(store.progress || {}, key, state.originalUrl);
-          if (!record) return;
-          if (record.url === state.originalUrl) {
-            // 打开的就是上次读到的章节：续读落地时按章内比例精确恢复；主动跳转则从头开始
-            if (state.landingIntent === 'jump') return;
-            const ratio = typeof record.chapterRatio === 'number' ? record.chapterRatio : null;
-            if (ratio == null) return;
-            state.restoredRatio = ratio;
-            requestAnimationFrame(() => {
-              if (!this.isOpen || !this.state) return;
-              const cur = this.state.chapters[this.state.currentIndex];
-              const scroller = this.state.scroller;
-              if (cur && cur.el) {
-                const span = Math.max(1, cur.el.offsetHeight - scroller.clientHeight);
-                scroller.scrollTop = cur.el.offsetTop + ratio * span;
+        chrome.storage.local
+          .get(['p:' + key, 'progress'])
+          .then(async (store) => {
+            if (!this._alive(state)) return;
+            // 分书籍：先精确命中书键（新格式独立 key / 旧版整包），未命中按章节 URL
+            // 目录归并（防目录识别漂移导致同书分裂）
+            let record = store['p:' + key];
+            if (!record && store.progress) record = NR.findBookRecord(store.progress, key, state.originalUrl);
+            if (!record) {
+              // 新格式精确未命中：扫描全部 p:*（书键漂移时按章节 URL 归并）
+              const all = await chrome.storage.local.get(null).catch(() => null);
+              if (!this._alive(state)) return;
+              if (all) {
+                const map = {};
+                for (const k of Object.keys(all)) {
+                  if (k.indexOf('p:') === 0 && all[k] && all[k].url) map[k.slice(2)] = all[k];
+                }
+                record = NR.findBookRecord(map, key, state.originalUrl);
               }
-            });
-          } else if (record.url && !state.landingIntent) {
-            // 从同书其他章节自然进入（悬浮按钮/快捷键）才提示续读；主动跳转不提示
-            this._showResumeChip(record);
-          }
-        })
-        .catch(() => {});
+            }
+            if (!record) return;
+            if (record.url === state.originalUrl) {
+              // 打开的就是上次读到的章节：续读落地时按章内比例精确恢复；主动跳转则从头开始
+              if (state.landingIntent === 'jump') return;
+              const ratio = typeof record.chapterRatio === 'number' ? record.chapterRatio : null;
+              if (ratio == null) return;
+              state.restoredRatio = ratio;
+              requestAnimationFrame(() => {
+                if (!this._alive(state)) return;
+                const cur = state.chapters[state.currentIndex];
+                const scroller = state.scroller;
+                if (cur && cur.el) {
+                  const span = Math.max(1, cur.el.offsetHeight - scroller.clientHeight);
+                  scroller.scrollTop = cur.el.offsetTop + ratio * span;
+                }
+              });
+            } else if (record.url && !state.landingIntent) {
+              // 从同书其他章节自然进入（悬浮按钮/快捷键）才提示续读；主动跳转不提示
+              this._showResumeChip(record);
+            }
+          })
+          .catch(() => {});
       } catch (e) {
         /* extAlive 检查与实际调用之间上下文失效的竞态：同样跳过恢复 */
       }

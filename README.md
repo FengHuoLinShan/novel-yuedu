@@ -2,9 +2,9 @@
 
 一键把杂乱的小说页面重排为干净的全屏阅读视图：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录。
 
-Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Kiwi/Edge Canary/Firefox）
+Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.5 · 安装包见 [Releases](../../releases)
+> 版本：0.2.7 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -31,7 +31,7 @@ Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Kiwi/Edg
 4. 点 **加载解压缩的扩展**（Chrome 显示为「加载已解压的扩展程序」），选择解压后的目录（含 `manifest.json`）
 5. （可选）在扩展管理页的快捷键设置中确认/修改 `Alt+R`
 
-> 不提供 `.crx` 安装包：Chrome/Edge 的策略禁止直接安装非商店来源的 CRX，下载后双击会报错，请使用上述解压加载方式。
+> 桌面端不使用 `.crx` 安装：Chrome/Edge 的策略禁止直接安装非商店来源的 CRX，请使用上述解压加载方式。**Android 手机专用**的 `.crx` 侧载包见 [Releases](../../releases)，安装方式见 [Android 使用](#android-使用)。
 
 ## 使用
 
@@ -48,19 +48,50 @@ Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Kiwi/Edg
 
 ## Android 使用
 
-Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展 v0.2.0 起做了移动端适配（触控热区、惯性滚动、双击缩放消除、面板窄屏布局），可通过以下支持扩展的 Android 浏览器使用同一安装包：
+Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展 v0.2.0 起做了移动端适配（触控热区、惯性滚动、双击缩放消除、面板窄屏布局），Android 上经支持扩展侧载的浏览器安装：
 
-- **Kiwi Browser / Edge Canary (Android)**：Chromium 内核，可直接侧载 `dist/novel-reader-v*.zip`（或在 Kiwi 的扩展页开启开发者模式后加载）
+- **Microsoft Edge（安卓）**：从 [Releases](../../releases) 下载 `novel-yuedu-v*.crx`，在 Edge 隐藏的「开发人员选项」里以 `Extension Install by CRX` 安装，步骤见下
+- **Lemur / 狐猴浏览器**：支持商店扩展与本地 `.crx` 侧载，操作类似（Kiwi Browser 已于 2025 年初停止维护并从 Play 下架，不建议再作为宿主）
 - **Firefox for Android**：manifest 已含 gecko 兼容字段（事件页 background + 扩展 ID）；正式安装需经 addons.mozilla.org 签名，开发者可用 `about:debugging` 临时加载
 - 触屏下：悬浮按钮点击进入，双击暂停，`Aa` 面板与目录面板均为全高侧滑设计
+
+### Edge（安卓）侧载 crx：三步安装
+
+1. 电脑上从 [Releases](../../releases) 下载 `novel-yuedu-v*.crx`，传到手机（微信文件传输助手 / 云盘 / `adb push <文件> /sdcard/Download/` 均可）
+2. 手机 Edge：**设置 → 关于 Microsoft Edge → 连续点击版本号 5 次**解锁「开发人员选项」；返回设置页进入「开发人员选项」→ `Extension Install by CRX` → 选中 `.crx` 文件安装
+3. 打开小说章节页，右下角出现 📖 悬浮按钮即成功
+
+> **找不到扩展入口？** 部分版本（尤其国内特供版）可能灰度了该功能：先升级 Edge 到最新版重试；再在地址栏打开 `edge://flags` 搜索 `extension`，开启 Android 扩展相关开关并重启重试；仍不行则改用 **Edge Canary**（该入口开箱即用）或 **Lemur** 浏览器走同样步骤。
+
+### 开发者自打包：zip 转 crx
+
+自行修改代码后（或 Releases 未附 crx 时），把 zip 转成 crx：
+
+1. 解压 `novel-reader-v*.zip`（`manifest.json` 在文件夹根目录）
+2. 桌面 Chrome/Edge 打开 `chrome://extensions`，开启「开发者模式」→「打包扩展程序」→「扩展程序根目录」选解压后的文件夹，生成 `.crx` 与 `.pem`
+3. 把 `.crx` 传到手机，按上面步骤安装
+
+> **保留打包生成的 `.pem` 私钥**：crx 的扩展 ID 由私钥决定，换 `.pem` 会得到新 ID，`chrome.storage.local` 里按 ID 存储的阅读进度与设置随之丢失。本项目发布用私钥保存在仓库外的 `../novel-yuedu.pem`（不纳入版本库），每次打包复用同一把。
 
 ## 打包
 
 ```bash
-python3 tools/package.py   # 产出 dist/novel-reader-v<版本>.zip（仅运行时文件）
+python3 tools/package.py   # 产出 dist/novel-reader-v<版本>.zip 与 -firefox.zip（仅运行时文件）
 ```
 
-产物可直接用于 Chrome Web Store 上传或 Android 侧载。`dist/` 不纳入版本库，zip 作为 GitHub Release 附件分发。
+zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件。**Android 侧载需要 `.crx`**，用发布私钥打包（在纯英文路径下中转，规避 Chrome 对中文路径密钥参数的解析问题）：
+
+```bash
+rm -rf /tmp/novel-pack && mkdir -p /tmp/novel-pack
+cp ../novel-yuedu.pem /tmp/novel-pack/key.pem
+unzip -q dist/novel-reader-v<版本>.zip -d /tmp/novel-pack/android-src
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --pack-extension=/tmp/novel-pack/android-src \
+  --pack-extension-key=/tmp/novel-pack/key.pem
+mv /tmp/novel-pack/android-src.crx dist/novel-yuedu-v<版本>.crx
+```
+
+生成的 `.crx` 一并作为 GitHub Release 附件分发。`dist/` 与私钥均不纳入版本库。
 
 ## 本地测试
 
@@ -71,12 +102,18 @@ python3 tools/gen_fixtures.py
 # 2. 启动本地站点
 python3 -m http.server -d test/fixtures 8080
 
-# 3. 单元测试（清洗器/导航识别/编码探测，21 项断言）
+# 3. 单元测试（清洗器/导航识别/编码探测/书籍记录匹配，31 项断言）
 node tools/test-core.mjs
 
-# 4. 端到端测试（headless Chrome for Testing 实际加载扩展，18 项断言）
+# 4. 端到端测试（headless Chrome for Testing 实际加载扩展，47 项断言）
 #    需 Playwright 缓存的 Chrome for Testing（正式版 Chrome 137+ 已移除 --load-extension）
 node tools/e2e-test.mjs "$PWD"
+
+# 5. 章节收起滚动补偿回归（桌面/手机视口，34 项断言）
+node tools/e2e-trim.mjs "$PWD"
+
+# 6. 长时使用稳定性回归（生命周期/多标签页/DNR/写入节流，39 项断言，对应 STAB-001~010）
+node tools/e2e-lifecycle.mjs "$PWD"
 ```
 
 手动验证：浏览器访问 `http://127.0.0.1:8080/utf8site/1.html`（UTF-8）与 `http://127.0.0.1:8080/gbksite/1.html`（GBK 编码），然后走一遍悬浮按钮 → 滚动拼接 → 翻章 → 设置 → Esc 流程。

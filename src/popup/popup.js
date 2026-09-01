@@ -20,14 +20,25 @@
     return sameYear ? md : d.getFullYear() + '/' + md;
   }
 
-  /** 最近阅读列表：progress 按时间倒序取前 8 条；点击写 pendingOpen 后开新标签，落地自动进阅读模式 */
+  /**
+   * 最近阅读列表：每本书独立 storage key（p:<书键>），按时间倒序取前 8 条；
+   * 兼容读取旧版整包 progress。点击写 po:<目标URL> 跳转标记后开新标签，
+   * 落地自动进阅读模式（多标签页并发续读互不覆盖）。
+   */
   async function loadRecent() {
     const listEl = $('recentList');
     let records = [];
     try {
-      const { progress } = await chrome.storage.local.get('progress');
-      records = Object.values(progress || {})
-        .filter((r) => r && r.url)
+      const all = await chrome.storage.local.get(null);
+      const map = {};
+      for (const k of Object.keys(all)) {
+        if (k.indexOf('p:') === 0 && all[k] && all[k].url) map[k.slice(2)] = all[k];
+      }
+      const legacy = all.progress || {};
+      for (const k of Object.keys(legacy)) {
+        if (legacy[k] && legacy[k].url && !map[k]) map[k] = legacy[k];
+      }
+      records = Object.values(map)
         .sort((a, b) => (b.ts || 0) - (a.ts || 0))
         .slice(0, 8);
     } catch (e) {
@@ -66,8 +77,10 @@
       item.appendChild(go);
       item.addEventListener('click', async () => {
         try {
-          // resume 意图：落地后恢复到上次读到的章内位置
-          await chrome.storage.local.set({ pendingOpen: { url: r.url, ts: Date.now(), intent: 'resume' } });
+          // resume 意图：落地后恢复到上次读到的章内位置（每目标 URL 独立 key）
+          await chrome.storage.local.set({
+            ['po:' + r.url.split('#')[0]]: { url: r.url, ts: Date.now(), intent: 'resume' }
+          });
         } catch (e) {
           /* 标记失败也能打开，只是不自动进阅读模式 */
         }

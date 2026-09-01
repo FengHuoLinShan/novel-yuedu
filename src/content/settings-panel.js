@@ -1,6 +1,7 @@
 /**
  * settings-panel.js — 排版设置模型与面板 UI
- * 设置存 chrome.storage.sync（跨设备同步），改动即时生效并持久化。
+ * 设置存 chrome.storage.sync（跨设备同步），改动即时生效；持久化做尾缘
+ * debounce（滑杆拖动的高频 input 只落一次最终值，避开 sync 写限额）。
  */
 (function () {
   'use strict';
@@ -53,16 +54,44 @@
     return NR.settings;
   };
 
-  /** 更新设置并持久化 */
+  let persistTimer = 0;
+  let syncFailNotified = false;
+
+  /**
+   * 更新设置：页面立即生效，持久化走尾缘 debounce。
+   * 滑杆每个 input 事件都会调用本函数（连续拖动高频），直接写 storage.sync 会撞
+   * 每分钟 120 次 / 每小时 1800 次的写限额，被拒的值就丢了；收敛为停手后写一次。
+   */
   NR.saveSettings = function (patch) {
     Object.assign(NR.settings, patch);
     NR.applySettings();
+    NR.persistSettingsSoon();
+  };
+
+  NR.persistSettingsSoon = function () {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => NR.persistSettingsNow(), 400);
+  };
+
+  NR.persistSettingsNow = function () {
+    clearTimeout(persistTimer);
     try {
-      if (NR.extAlive()) chrome.storage.sync.set({ settings: NR.settings }).catch(() => {});
+      if (!NR.extAlive()) return;
+      chrome.storage.sync.set({ settings: NR.settings }).catch((e) => {
+        // 持久化失败不能无声丢失（超限时本次修改不会跨设备保留）
+        console.warn('[novel-reader] 设置同步失败：', e && e.message);
+        if (!syncFailNotified) {
+          syncFailNotified = true;
+          NR.toast('设置同步失败，本次修改不会跨设备保留', 2600);
+        }
+      });
     } catch (e) {
       /* 扩展上下文失效时设置仍在本页生效，只是不再持久化 */
     }
   };
+
+  // 页面卸载前把 debounce 中的最后一次修改落盘，避免关页丢改动
+  window.addEventListener('pagehide', () => NR.persistSettingsNow());
 
   /** 将当前设置应用到打开中的阅读视图（未打开则跳过） */
   NR.applySettings = function () {

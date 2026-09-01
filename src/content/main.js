@@ -97,23 +97,49 @@
   }
 
   /**
-   * 快速跳转落地：目录跳转 / popup 续读 / 返回上一章写入 pendingOpen 标记后导航到本页，
-   * 内容脚本启动时消费标记 → 自动进入阅读模式（配合进度记录恢复到上次位置）。
+   * 快速跳转落地：目录跳转 / popup 续读 / 返回上一章写入 po:<目标URL> 标记后导航到本页，
+   * 内容脚本启动时只消费自己命中的条目 → 自动进入阅读模式（配合进度记录恢复到上次位置）。
+   * 每个目标 URL 一条独立 key：两个标签页同时跳不同章节互不覆盖、互不误删；
+   * 启动时顺带清理过期条目（10 分钟）与旧版单值 pendingOpen。
    */
   async function checkPendingOpen() {
     try {
-      const store = await chrome.storage.local.get('pendingOpen');
-      const po = store.pendingOpen;
-      if (!po || !po.url) return;
-      const samePage = po.url.split('#')[0] === location.href.split('#')[0];
-      const expired = Date.now() - (po.ts || 0) > 10 * 60 * 1000; // 10 分钟有效期
-      if (expired) {
-        chrome.storage.local.remove('pendingOpen');
-        return;
+      const store = await chrome.storage.local.get(null);
+      const now = Date.now();
+      const TTL = 10 * 60 * 1000;
+      const here = location.href.split('#')[0];
+      const doomed = [];
+      let mine = null;
+      for (const k of Object.keys(store)) {
+        if (k === 'pendingOpen') {
+          // 旧版单值标记：按原语义消费/清理
+          const po = store[k];
+          if (!po || !po.url) {
+            doomed.push(k);
+            continue;
+          }
+          const samePage = po.url.split('#')[0] === here;
+          if (samePage || now - (po.ts || 0) > TTL) doomed.push(k);
+          if (samePage && now - (po.ts || 0) <= TTL) mine = po;
+        } else if (k.indexOf('po:') === 0) {
+          const po = store[k];
+          if (!po || !po.url) {
+            doomed.push(k);
+            continue;
+          }
+          if (now - (po.ts || 0) > TTL) {
+            doomed.push(k);
+            continue;
+          }
+          if (po.url.split('#')[0] === here) {
+            mine = po;
+            doomed.push(k); // 只删除自己命中的条目，别的标签页的标记不动
+          }
+        }
       }
-      if (!samePage) return; // 是给别的页面写的，留着不碰
-      chrome.storage.local.remove('pendingOpen');
-      NR._autoOpenIntent = po.intent === 'resume' ? 'resume' : 'jump'; // 传给 reader.open 决定是否恢复位置/提示
+      if (doomed.length) chrome.storage.local.remove(doomed).catch(() => {});
+      if (!mine) return;
+      NR._autoOpenIntent = mine.intent === 'resume' ? 'resume' : 'jump'; // 传给 reader.open 决定是否恢复位置/提示
       await NR.reader.open();
     } catch (e) {
       /* 自动打开失败不影响正常使用 */

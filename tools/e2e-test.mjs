@@ -339,12 +339,12 @@ try {
   await sleep(2200); // 进度保存节流 1.5s
   const progressRaw = await evalJs(
     cdp4,
-    `new Promise(res=>chrome.storage.local.get('progress',s=>res(JSON.stringify(s.progress||{}))))`,
+    `new Promise(res=>chrome.storage.local.get(null,s=>{const m={};for(const k of Object.keys(s))if(k.indexOf('p:')===0)m[k.slice(2)]=s[k];res(JSON.stringify(m))}))`,
     ctx
   );
   const progressMap = JSON.parse(progressRaw);
   const rec = Object.values(progressMap).find((r) => r && r.url && r.url.indexOf('/utf8site/1.html') >= 0);
-  check('阅读进度已记录（章节+标题+章内位置）', !!rec && rec.chapterTitle === '第一章 雨夜客栈' && rec.chapterRatio > 0, progressRaw.slice(0, 160));
+  check('阅读进度已记录（章节+标题+章内位置，按书独立 key）', !!rec && rec.chapterTitle === '第一章 雨夜客栈' && rec.chapterRatio > 0, progressRaw.slice(0, 160));
 
   // 2) pendingOpen → 跳转第三章后自动进入阅读模式
   await evalJs(
@@ -383,7 +383,7 @@ try {
   await sleep(2200); // 触发拼接第三章
   await evalJs(cdp4, `(()=>{const sc=document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-scroll');sc.scrollTop=sc.scrollHeight-sc.clientHeight-20;})()`);
   await sleep(2300); // 章节切换即时落库
-  const progAfter = JSON.parse(await evalJs(cdp4, `new Promise(res=>chrome.storage.local.get('progress',s=>res(JSON.stringify(Object.values(s.progress||{})))))`, ctx2));
+  const progAfter = JSON.parse(await evalJs(cdp4, `new Promise(res=>chrome.storage.local.get(null,s=>{const m={};for(const k of Object.keys(s))if(k.indexOf('p:')===0)m[k.slice(2)]=s[k];res(JSON.stringify(Object.values(m)))}))`, ctx2));
   const rec3 = progAfter.find((r) => r && (r.url || '').endsWith('/utf8site/3.html'));
   check('拼接滚动后进度同步到当前屏章节', !!rec3 && rec3.chapterRatio > 0, JSON.stringify(rec3 || {}).slice(0, 140));
 
