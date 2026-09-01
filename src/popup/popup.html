@@ -14,7 +14,7 @@
       </div>
     </div>
 
-    <button id="openReader" class="primary">进入阅读模式 <span class="kbd">Alt+R</span></button>
+    <button id="openReader" class="primary">进入阅读模式 <span class="kbd" id="toggleKbd">Alt+R</span></button>
 
     <div class="section-title">最近阅读</div>
     <div id="recentList" class="recent"><div class="recent-empty">读取中…</div></div>
@@ -35,7 +35,8 @@
     </div>
 
     <div class="foot">
-      快捷键：Alt+R 进入/退出 · ← → 翻章 · + − 字号 · Esc 退出<br />
+      快捷键：<span id="toggleFootKbd">Alt+R</span> 进入/退出 · ← → 翻章 · + − 字号 · Esc 退出<br />
+      Mac 建议使用 ⌘⇧K（可在浏览器的扩展快捷键设置中调整）。<br />
       阅读时自动按站点屏蔽广告域名，重排页面天然去除广告与图片。
     </div>
   </div>

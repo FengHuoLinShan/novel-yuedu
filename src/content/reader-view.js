@@ -265,6 +265,8 @@
       this._syncDnr(false);
       try {
         window.removeEventListener('keydown', state.keyHandler, true);
+        window.removeEventListener('keyup', state.keyUpHandler, true);
+        window.removeEventListener('novelreader:key', state.guardKeyHandler);
         state.scroller.removeEventListener('scroll', state.scrollHandler);
         window.removeEventListener('pagehide', state.pageHideHandler);
         document.removeEventListener('visibilitychange', state.pageHideHandler);
@@ -400,37 +402,68 @@
       state.scrollHandler = () => this._onScroll();
       state.scroller.addEventListener('scroll', state.scrollHandler, { passive: true });
 
-      // 快捷键
-      state.keyHandler = (e) => {
-        if (e.altKey || e.ctrlKey || e.metaKey) return;
-        if (state.inputFocus) return;
-        const isSpace = e.key === ' ' || e.code === 'Space';
-        if (e.key === 'Escape') {
+      // 快捷键：阅读视图打开期间，站点脚本不应再看到任何键盘事件——
+      // 大量小说站把 ←/→ 绑定为上一章/下一章的整页跳转，放行会与阅读器
+      // 同时触发导航（表现为"按方向键翻章就退出阅读模式"）。
+      // 按键管线（Chrome 下主世界先派发、且主世界的 stopImmediatePropagation
+      // 会连隔离世界一起截断）：
+      //  - 主世界守卫 kbd-guard.js 拦截原始 keydown/keyup，经 CustomEvent
+      //    （novelreader:key）转发到本世界，由 handleKey 统一处理；
+      //  - 无守卫的环境（world:MAIN 不可用等）退回直接监听原始事件。
+      // 只阻断传播、不改默认行为：目录搜索、设置面板打字和移动光标不受影响。
+      const blockPageKeys = (e) => e.stopImmediatePropagation();
+      state.handleKey = (k) => {
+        if (k.key === 'Escape') {
+          // Esc 优先关浮层（即使焦点在浮层的搜索框里），无浮层且焦点不在输入框时才退出阅读
           if (root.classList.contains('nr-catalog-open')) this._toggleCatalog(false);
           else if (root.classList.contains('nr-panel-open')) this._togglePanel(false);
-          else this.close();
-          e.preventDefault();
-        } else if (e.key === 'PageDown' || (isSpace && !e.shiftKey)) {
+          else if (!state.inputFocus) this.close();
+          k.preventDefault();
+          return;
+        }
+        if (k.altKey || k.ctrlKey || k.metaKey || state.inputFocus) return;
+        const isSpace = k.key === ' ' || k.code === 'Space';
+        if (k.key === 'PageDown' || (isSpace && !k.shiftKey)) {
           this._pageScroll(1);
-          e.preventDefault();
-        } else if (e.key === 'PageUp' || (isSpace && e.shiftKey)) {
+          k.preventDefault();
+        } else if (k.key === 'PageUp' || (isSpace && k.shiftKey)) {
           this._pageScroll(-1);
-          e.preventDefault();
-        } else if (e.key === 'ArrowRight') {
+          k.preventDefault();
+        } else if (k.key === 'ArrowRight') {
           this.goNext();
-          e.preventDefault();
-        } else if (e.key === 'ArrowLeft') {
+          k.preventDefault();
+        } else if (k.key === 'ArrowLeft') {
           this.goPrev();
-          e.preventDefault();
-        } else if (e.key === '+' || e.key === '=') {
+          k.preventDefault();
+        } else if (k.key === '+' || k.key === '=') {
           this._adjustFont(1);
-          e.preventDefault();
-        } else if (e.key === '-' || e.key === '_') {
+          k.preventDefault();
+        } else if (k.key === '-' || k.key === '_') {
           this._adjustFont(-1);
-          e.preventDefault();
+          k.preventDefault();
         }
       };
+      state.keyHandler = (e) => {
+        blockPageKeys(e);
+        state.handleKey(e);
+      };
+      state.guardKeyHandler = (e) => {
+        const d = e.detail || {};
+        state.handleKey({
+          key: d.key,
+          code: d.code,
+          shiftKey: !!d.shiftKey,
+          altKey: !!d.altKey,
+          ctrlKey: !!d.ctrlKey,
+          metaKey: !!d.metaKey,
+          preventDefault() {}
+        });
+      };
       window.addEventListener('keydown', state.keyHandler, true);
+      // keyup 同理阻断：少数站点把翻章导航绑在 keyup 上
+      state.keyUpHandler = blockPageKeys;
+      window.addEventListener('keyup', state.keyUpHandler, true);
+      window.addEventListener('novelreader:key', state.guardKeyHandler);
 
       // 点击分区：上/下三分之一翻页（避开按钮链接与选词），中间三分之一唤出/收起工具栏
       state.scroller.addEventListener('click', (e) => {
@@ -466,6 +499,7 @@
       if (open) root.classList.remove('nr-catalog-open'); // 两个侧板互斥
       root.classList.toggle('nr-panel-open', open);
       if (open) this.state.panelApi.refresh();
+      else this._blurPanelFocus(); // 焦点残留会让 inputFocus 恒真，Esc 退出等按键被误吞
     },
 
     // ---------------- 目录面板与快速跳转 ----------------
@@ -483,7 +517,15 @@
         this._renderCatalogList('');
       } else {
         root.classList.remove('nr-catalog-open');
+        this._blurPanelFocus(); // 同 _togglePanel：移出搜索框焦点，避免 inputFocus 残留
       }
+    },
+
+    /** 关闭侧板后把焦点移回正文滚动区（inputFocus 复位，快捷键恢复全量可用） */
+    _blurPanelFocus() {
+      const state = this.state;
+      const el = state.shadow && state.shadow.activeElement;
+      if (el && typeof el.blur === 'function') el.blur();
     },
 
     /** 拉取目录页并解析章节列表（复用 loader 的 fetch + 编码探测管线） */

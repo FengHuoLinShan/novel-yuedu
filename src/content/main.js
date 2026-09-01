@@ -14,6 +14,27 @@
 
   let floatBtn = null;
 
+  // 切换快捷键提示：Mac 新装默认 ⌘⇧K（manifest suggested_key.mac），其余平台 Alt+R；
+  // 已有安装升级不会重映射，故启动时向后台查一次真实生效的绑定，避免提示与实际不符
+  let toggleHint = /Mac/i.test(navigator.platform || '') ? '⌘⇧K' : 'Alt+R';
+
+  function refreshToggleHint() {
+    try {
+      chrome.runtime.sendMessage({ type: 'NR_GET_SHORTCUT' }, (resp) => {
+        if (!NR.extAlive()) return; // 孤儿脚本：上下文已失效，保留平台默认提示
+        const s = resp && resp.shortcut;
+        if (s) {
+          toggleHint = s;
+          if (floatBtn && floatBtn.isConnected) {
+            floatBtn.title = '进入小说阅读模式（' + toggleHint + '）';
+          }
+        }
+      });
+    } catch (e) {
+      /* chrome.* 孤儿同步抛错：吞掉，保留平台默认提示 */
+    }
+  }
+
   // ---------------- 站点黑名单 ----------------
 
   async function refreshBlacklist() {
@@ -34,7 +55,7 @@
     btn.id = 'novel-reader-float-btn';
     btn.setAttribute('role', 'button');
     btn.tabIndex = 0;
-    btn.title = '进入小说阅读模式（Alt+R）';
+    btn.title = '进入小说阅读模式（' + toggleHint + '）';
     btn.textContent = '📖';
     btn.style.cssText =
       'position:fixed;right:20px;bottom:24px;width:44px;height:44px;border-radius:50%;' +
@@ -81,6 +102,7 @@
 
   async function boot() {
     await Promise.all([NR.getSettings().catch(() => {}), refreshBlacklist()]);
+    refreshToggleHint();
     NR.loadSiteRules().then(updateFloatButton).catch(() => {});
     updateFloatButton();
     checkPendingOpen();

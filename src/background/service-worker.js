@@ -39,6 +39,17 @@ async function toggleReaderInActiveTab() {
         target: { tabId: tab.id, allFrames: false },
         files: CONTENT_SCRIPT_FILES
       });
+      // 主世界键盘守卫单独特殊注入（隔离世界无法阻断站点脚本的 ←/→ 翻章监听）
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: false },
+          files: ['src/content/kbd-guard.js'],
+          world: 'MAIN',
+          injectImmediately: true
+        });
+      } catch (e3) {
+        /* world:MAIN 不可用的环境降级：仅失去按键隔离，不影响其余功能 */
+      }
       await chrome.tabs.sendMessage(tab.id, { type: 'NR_TOGGLE' });
     } catch (e2) {
       // chrome:// 等不可注入页面，忽略
@@ -58,6 +69,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     toggleReaderInActiveTab();
     sendResponse({ ok: true });
     return false;
+  }
+  if (msg && msg.type === 'NR_GET_SHORTCUT') {
+    // 内容脚本无 chrome.commands 权限：代查当前真实生效的切换快捷键（用户可自行改绑/清除）
+    chrome.commands
+      .getAll()
+      .then((cmds) => {
+        const c = Array.isArray(cmds) && cmds.find((x) => x.name === 'toggle-reader');
+        sendResponse({ shortcut: (c && c.shortcut) || '' });
+      })
+      .catch(() => sendResponse({ shortcut: '' }));
+    return true; // 异步 sendResponse
   }
   if (msg && msg.type === 'NR_DNR_SESSION') {
     const tabId = sender && sender.tab && sender.tab.id != null ? sender.tab.id : null;

@@ -104,6 +104,17 @@
     );
     $('floatingButton').checked = !!s.floatingButton;
 
+    // 显示真实生效的切换快捷键：Mac 新装为 ⌘⌥R，已有安装可能仍是 Alt+R 或用户自定义
+    try {
+      const cmds = await chrome.commands.getAll();
+      const cmd = Array.isArray(cmds) && cmds.find((c) => c.name === 'toggle-reader');
+      const label = (cmd && cmd.shortcut) || '未设置';
+      $('toggleKbd').textContent = label;
+      $('toggleFootKbd').textContent = label;
+    } catch (e) {
+      /* 查询失败保留默认 Alt+R 文案 */
+    }
+
     // 全局广告域名拦截（静态规则集开关）
     try {
       const enabled = await chrome.declarativeNetRequest.getEnabledRulesets();

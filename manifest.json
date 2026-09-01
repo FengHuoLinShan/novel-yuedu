@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "小说悦读",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "沉浸式小说阅读模式：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录。",
   "icons": {
     "16": "icons/icon16.png",
@@ -29,7 +29,7 @@
   },
   "action": {
     "default_popup": "src/popup/popup.html",
-    "default_title": "小说悦读（Alt+R 进入阅读模式）",
+    "default_title": "小说悦读（Alt+R / Mac ⌘⇧K 进入阅读模式）",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -39,12 +39,19 @@
   "commands": {
     "toggle-reader": {
       "suggested_key": {
-        "default": "Alt+R"
+        "default": "Alt+R",
+        "mac": "Command+Shift+K"
       },
       "description": "进入 / 退出阅读模式"
     }
   },
   "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content/kbd-guard.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["http://*/*", "https://*/*"],
       "js": [

@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.8 · 安装包见 [Releases](../../releases)
+> 版本：0.2.9 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -29,19 +29,19 @@ Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / L
 2. 打开扩展管理页：Edge 访问 `edge://extensions`，Chrome 访问 `chrome://extensions`
 3. 打开 **开发人员模式**（Edge 在页面左下角，Chrome 在右上角）
 4. 点 **加载解压缩的扩展**（Chrome 显示为「加载已解压的扩展程序」），选择解压后的目录（含 `manifest.json`）
-5. （可选）在扩展管理页的快捷键设置中确认/修改 `Alt+R`
+5. （可选）在扩展管理页的快捷键设置中确认/修改切换快捷键（Windows/Linux `Alt+R`，Mac 新装为 `⌘⇧K`）
 
 > 桌面端不使用 `.crx` 安装：Chrome/Edge 的策略禁止直接安装非商店来源的 CRX，请使用上述解压加载方式。**Android 手机专用**的 `.crx` 侧载包见 [Releases](../../releases)，安装方式见 [Android 使用](#android-使用)。
 
 ## 使用
 
-- **进入阅读模式**：小说章节页右下角悬浮按钮 📖 / 工具栏图标弹窗按钮 / 快捷键 `Alt+R`
+- **进入阅读模式**：小说章节页右下角悬浮按钮 📖 / 工具栏图标弹窗按钮 / 快捷键（Windows/Linux `Alt+R`，Mac 新装为 `⌘⇧K`，已装用户沿用原绑定，可在扩展快捷键设置中调整）
 - **快捷键**（阅读视图内）：
   - `PageDown` / `空格` 向下翻一页，`PageUp` / `Shift+空格` 向上翻一页（每次恰好一屏略小，保留 10% 重叠行）
   - 点击屏幕**上/下三分之一区域**同样翻页（可在设置面板关闭）；**中间三分之一**点击唤出/收起顶部工具栏；正在选词或点到按钮时不触发
-  - `←` / `→` 上一章 / 下一章（第一章之前会跳转原站上一章并自动回到阅读模式）
+  - `←` / `→` 上一章 / 下一章（第一章之前会跳转原站上一章并自动回到阅读模式）。v0.2.9 起阅读期间站点自身的 `←`/`→` 翻章脚本被隔离，不会再把整页带走导致"退出阅读模式"
   - `+` / `-` 增减字号
-  - `Esc` 退出并完整还原原页面
+  - `Esc` 关闭目录/设置浮层；无浮层时退出并完整还原原页面
 - **目录快速跳转**：顶部栏 `☰ 目录` → 搜索章节号/标题 → 点击直达
 - **排版设置**：顶部栏 `Aa` 按钮滑出面板，全部设置即调即存
 - **最近阅读**：工具栏图标弹窗顶部列表，点「续读 ›」回到上次读到的位置
@@ -114,6 +114,9 @@ node tools/e2e-trim.mjs "$PWD"
 
 # 6. 长时使用稳定性回归（生命周期/多标签页/DNR/写入节流，39 项断言，对应 STAB-001~010）
 node tools/e2e-lifecycle.mjs "$PWD"
+
+# 7. 键盘隔离与 Mac 快捷键回归（站点 ←/→ 脚本劫持、Esc 浮层语义，19 项断言）
+node tools/e2e-keyboard.mjs "$PWD"
 ```
 
 手动验证：浏览器访问 `http://127.0.0.1:8080/utf8site/1.html`（UTF-8）与 `http://127.0.0.1:8080/gbksite/1.html`（GBK 编码），然后走一遍悬浮按钮 → 滚动拼接 → 翻章 → 设置 → Esc 流程。
@@ -133,6 +136,7 @@ src/content/
   extractor.js              三层正文提取管线 + 上一章/下一章/目录识别
   next-chapter.js           预加载器：fetch + 编码探测 + 解析缓存 + 熔断限速
   reader-view.js            阅读视图：Shadow DOM、滚动拼接、快捷键、进度记忆
+  kbd-guard.js              主世界键盘隔离（world:MAIN）：阅读期间阻断站点 ←/→ 翻章脚本
   settings-panel.js         排版设置模型与面板 UI
   main.js                   入口：悬浮按钮、消息、黑名单、设置热更新
 src/background/             service worker：命令分发、按需注入、会话级 DNR
