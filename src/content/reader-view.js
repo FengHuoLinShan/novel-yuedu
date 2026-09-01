@@ -169,11 +169,18 @@
     }
     .nr-cat-item:hover { background: color-mix(in srgb, var(--nr-fg) 8%, transparent); }
     .nr-cat-item.nr-cur { color: var(--nr-accent); font-weight: 600; background: color-mix(in srgb, var(--nr-accent) 8%, transparent); }
+    .nr-cat-item.nr-hit { color: var(--nr-accent); font-weight: 600; outline: 1px dashed var(--nr-accent); outline-offset: -1px; }
     .nr-cat-empty { padding: 24px 14px; text-align: center; color: var(--nr-muted); line-height: 2; }
     .nr-cat-empty .nr-btn { all: unset; cursor: pointer; font: inherit; border: 1px solid var(--nr-line); border-radius: 999px; padding: 6px 20px; color: var(--nr-fg); }
-    @media (max-width: 640px) {
+    /* 手机适配：窄窗口或触屏设备（老站常无 viewport 声明，手机上布局宽度仍是 980px，
+       仅凭 max-width 会漏掉这类站点，需叠加 pointer: coarse） */
+    @media (max-width: 640px), (pointer: coarse) {
       .nr-scroll { padding: 72px 12px 70px; }
-      .nr-act { padding: 10px 8px; }
+      .nr-act { padding: 10px 8px; min-height: 44px; }
+      .nr-act[data-act="prev"], .nr-act[data-act="next"] {
+        font-size: 20px; line-height: 1;
+        min-width: 44px; justify-content: center; padding: 0 12px;
+      }
       .nr-act .nr-act-text { display: none; }
       .nr-cat-item { padding: 11px 10px; }
     }
@@ -535,22 +542,67 @@
       listEl.appendChild(box);
     },
 
-    /** 渲染章节列表（带搜索过滤），当前章高亮并滚动到可见区 */
+    /**
+     * 当前章在目录中的索引：先精确 href 匹配，失配后退到去 hash 匹配
+     * （目录页链接与实际阅读地址常有 #锚点 差异，精确相等会静默失配导致打开目录不定位）。
+     * 不做仅 pathname 兜底：read.html?id=N 类站点全章共享 pathname，会错配到第一章。
+     */
+    _catalogCurIndex(list) {
+      const cur = this.state.chapters[this.state.currentIndex];
+      const curUrl = cur && cur.data.url;
+      if (!curUrl) return -1;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].url === curUrl) return i;
+      }
+      let curKey;
+      try {
+        const u = new URL(curUrl);
+        curKey = u.origin + u.pathname + u.search;
+      } catch (e) {
+        return -1;
+      }
+      for (let i = 0; i < list.length; i++) {
+        try {
+          const u = new URL(list[i].url);
+          if (u.origin + u.pathname + u.search === curKey) return i;
+        } catch (e) {
+          /* 非法 URL 跳过 */
+        }
+      }
+      return -1;
+    },
+
+    /**
+     * 渲染章节列表：无搜索词时定位当前章；搜索精确到唯一章节时不裁剪列表、
+     * 滚动定位到命中章附近（可看到前后章节）；多命中走过滤。
+     */
     _renderCatalogList(filterText) {
       const state = this.state;
       const listEl = state.root.querySelector('.nr-catalog-list');
       const list = state.catalogList;
       if (!list) return;
       const q = String(filterText || '').trim().toLowerCase();
-      const curUrl = state.chapters[state.currentIndex] && state.chapters[state.currentIndex].data.url;
+      let hitIdx = -1;
+      if (q) {
+        let hits = 0;
+        for (let i = 0; i < list.length && hits <= 1; i++) {
+          if (list[i].title.toLowerCase().indexOf(q) >= 0) {
+            hits++;
+            hitIdx = i;
+          }
+        }
+        if (hits !== 1) hitIdx = -1;
+      }
+      const curIdx = this._catalogCurIndex(list);
       listEl.textContent = '';
       const frag = document.createDocumentFragment();
       let shown = 0;
-      for (const item of list) {
-        if (q && item.title.toLowerCase().indexOf(q) < 0) continue;
+      for (let i = 0; i < list.length; i++) {
+        const item = list[i];
+        if (q && hitIdx < 0 && item.title.toLowerCase().indexOf(q) < 0) continue;
         if (shown >= CATALOG_RENDER_CAP) break; // 超长书目保护（与解析上限一致）
         const d = document.createElement('div');
-        d.className = 'nr-cat-item' + (item.url === curUrl ? ' nr-cur' : '');
+        d.className = 'nr-cat-item' + (i === curIdx ? ' nr-cur' : '') + (i === hitIdx ? ' nr-hit' : '');
         d.textContent = item.title;
         d.dataset.url = item.url;
         frag.appendChild(d);
@@ -565,10 +617,16 @@
         listEl.appendChild(frag);
       }
       const countEl = state.root.querySelector('.nr-cat-count');
-      countEl.textContent = q ? `（${shown}/${list.length}）` : `（共 ${list.length} 章）`;
-      if (!q) {
+      countEl.textContent = hitIdx >= 0 ? `（1/${list.length}·已定位）` : q ? `（${shown}/${list.length}）` : `（共 ${list.length} 章）`;
+      // 居中滚动到锚点：无搜索词→当前章；唯一命中→命中章；多命中过滤回到顶部（内容整体更换，旧偏移无意义）
+      if (hitIdx >= 0) {
+        const hit = listEl.querySelector('.nr-hit');
+        if (hit) listEl.scrollTop = Math.max(0, hit.offsetTop - listEl.clientHeight / 2);
+      } else if (!q) {
         const cur = listEl.querySelector('.nr-cur');
         if (cur) listEl.scrollTop = Math.max(0, cur.offsetTop - listEl.clientHeight / 2);
+      } else {
+        listEl.scrollTop = 0;
       }
     },
 
