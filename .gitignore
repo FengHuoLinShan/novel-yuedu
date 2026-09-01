@@ -10,7 +10,8 @@ _metadata/
 # 打包产物（作为 GitHub Release 附件分发，不入库）
 dist/
 
-# CRX 签名私钥（扩展 ID 由它派生，只在打包机本地保留，绝不入库）
+# CRX 签名私钥（扩展 ID 由它派生）。密钥存放在 ~/.config/novel-yuedu/（或 NR_CRX_KEY 指定路径），
+# 项目目录内绝不存放；此规则防旧位置文件回流，作为 git 侧双保险
 tools/crx-private-key.pem
 
 # 依赖与缓存

@@ -71,27 +71,27 @@ Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展
 2. 桌面 Chrome/Edge 打开 `chrome://extensions`，开启「开发者模式」→「打包扩展程序」→「扩展程序根目录」选解压后的文件夹，生成 `.crx` 与 `.pem`
 3. 把 `.crx` 传到手机，按上面步骤安装
 
-> **保留打包生成的 `.pem` 私钥**：crx 的扩展 ID 由私钥决定，换 `.pem` 会得到新 ID，`chrome.storage.local` 里按 ID 存储的阅读进度与设置随之丢失。本项目发布用私钥保存在仓库外的 `../novel-yuedu.pem`（不纳入版本库），每次打包复用同一把。
+> **保留打包生成的 `.pem` 私钥**：crx 的扩展 ID 由私钥决定，换 `.pem` 会得到新 ID，`chrome.storage.local` 里按 ID 存储的阅读进度与设置随之丢失。本项目发布私钥保存在项目目录之外的 `~/.config/novel-yuedu/crx-private-key.pem`（或 `NR_CRX_KEY` 环境变量指定路径），每次打包复用同一把。
 
 ## 打包
 
 ```bash
-python3 tools/package.py   # 产出 dist/novel-reader-v<版本>.zip 与 -firefox.zip（仅运行时文件）
+python3 tools/package.py   # 产出 Chrome 主包 zip / Firefox zip / Android 侧载 CRX3，并自校验签名
 ```
 
-zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件。**Android 侧载需要 `.crx`**，用发布私钥打包（在纯英文路径下中转，规避 Chrome 对中文路径密钥参数的解析问题）：
+zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件；CRX3 由脚本用发布私钥直接签名，产出 `dist/novel-yuedu-v<版本>.crx` 一并作为 Release 附件。`dist/` 与私钥均不纳入版本库，且**私钥绝不放在项目目录内**（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密），查找顺序：环境变量 `NR_CRX_KEY` → `~/.config/novel-yuedu/crx-private-key.pem` → `tools/crx-private-key.pem`（旧位置，仅过渡兼容并提示迁移）。找不到私钥时报错退出而**不会自动生成**——静默换钥会让扩展 ID 悄悄改变、安卓侧载老用户更新断链；确需换 ID 用 `python3 tools/package.py --gen-key` 显式生成（老用户须重装并丢本地进度）。
+
+手动 zip 转 crx（备选，效果等同；在纯英文路径下中转，规避 Chrome 对中文路径密钥参数的解析问题）：
 
 ```bash
 rm -rf /tmp/novel-pack && mkdir -p /tmp/novel-pack
-cp ../novel-yuedu.pem /tmp/novel-pack/key.pem
+cp ~/.config/novel-yuedu/crx-private-key.pem /tmp/novel-pack/key.pem
 unzip -q dist/novel-reader-v<版本>.zip -d /tmp/novel-pack/android-src
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --pack-extension=/tmp/novel-pack/android-src \
   --pack-extension-key=/tmp/novel-pack/key.pem
 mv /tmp/novel-pack/android-src.crx dist/novel-yuedu-v<版本>.crx
 ```
-
-生成的 `.crx` 一并作为 GitHub Release 附件分发。`dist/` 与私钥均不纳入版本库。
 
 ## 本地测试
 

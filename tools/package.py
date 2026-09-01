@@ -7,14 +7,18 @@
                                             该字段会让 Chrome 报 manifest 警告，故从主包剥离）
   dist/novel-yuedu-v<版本>.crx           —— CRX3 签名包，安卓 Kiwi / Edge Canary 侧载用
 
-CRX 签名私钥固定为 tools/crx-private-key.pem（gitignore 不入库）：
+CRX 签名私钥不放在项目目录内（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密）：
+  - 查找顺序：环境变量 NR_CRX_KEY → ~/.config/novel-yuedu/crx-private-key.pem
+    → tools/crx-private-key.pem（旧位置，仅过渡兼容并提示迁移）；
   - 扩展 ID 由公钥派生，换私钥 = 换扩展 ID，安卓侧载老用户更新会被视为新扩展；
-  - 私钥缺失时自动生成（新机器 clone 后首次打包），并在输出中提示 ID 已变。
+  - 找不到私钥时不再静默生成：--gen-key 显式生成新钥（换 ID 须让老用户重装）。
 """
 import hashlib
 import json
+import os
 import struct
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -25,7 +29,30 @@ version = manifest["version"]
 dist = ROOT / "dist"
 dist.mkdir(exist_ok=True)
 
-CRX_KEY = ROOT / "tools" / "crx-private-key.pem"
+CRX_KEY_LEGACY = ROOT / "tools" / "crx-private-key.pem"
+
+
+def primary_key_path() -> Path:
+    """私钥的应存放位置：显式指定 NR_CRX_KEY 时用它，否则用户配置目录（项目目录之外）。"""
+    env = os.environ.get("NR_CRX_KEY")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "novel-yuedu" / "crx-private-key.pem"
+
+
+def resolve_crx_key():
+    """按 NR_CRX_KEY → 用户配置目录 → 旧项目内路径 查找私钥；找不到返回 None。
+
+    显式设置的 NR_CRX_KEY 不存在时直接返回 None（视为缺失，交由调用方报错或
+    --gen-key 生成），避免拼错路径时静默回落到别的钥匙导致扩展 ID 悄悄改变。
+    """
+    p = primary_key_path()
+    if p.exists():
+        return p
+    if CRX_KEY_LEGACY.exists():
+        print(f"提示：正在使用旧位置私钥 {CRX_KEY_LEGACY}，请尽快移至 {p}（密钥不应留在项目目录内）")
+        return CRX_KEY_LEGACY
+    return None
 
 INCLUDE = ["manifest.json", "rules", "src", "icons"]
 EXCLUDE_NAMES = {".DS_Store", "__pycache__"}
@@ -96,15 +123,27 @@ def build_crx(zip_path: Path) -> str:
     SHA256/RSA PKCS#1v1.5 签名覆盖 SignedData{crx_id}，公钥 DER 与签名放入
     CrxFileHeader.sha256_with_rsa，扩展 ID = SHA256(公钥 DER) 前 16 字节）。
     返回扩展 ID。"""
-    if not CRX_KEY.exists():
-        _openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(CRX_KEY))
-        CRX_KEY.chmod(0o600)
-        print(f"已生成新签名私钥 {CRX_KEY.relative_to(ROOT)}（注意：扩展 ID 将与历史版本不同）")
+    key = resolve_crx_key()
+    if key is None:
+        if "--gen-key" in sys.argv:
+            key = primary_key_path()
+            key.parent.mkdir(parents=True, exist_ok=True)
+            _openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(key))
+            key.chmod(0o600)
+            print(f"已生成新签名私钥 {key}")
+            print("注意：扩展 ID 已随之变更，安卓侧载老用户更新会被视为新扩展，需按 README 重新安装")
+        else:
+            sys.exit(
+                "错误：未找到 CRX 签名私钥。\n"
+                f"  查找顺序：环境变量 NR_CRX_KEY → {primary_key_path()} → {CRX_KEY_LEGACY}（旧位置）\n"
+                "  扩展 ID 由私钥派生：要沿用历史 ID 请从备份恢复私钥到上述位置；\n"
+                "  确需换 ID（安卓老用户须重装、丢本地进度）请显式使用 --gen-key 生成新钥。"
+            )
 
-    pub_der = _openssl("rsa", "-in", str(CRX_KEY), "-pubout", "-outform", "DER")
+    pub_der = _openssl("rsa", "-in", str(key), "-pubout", "-outform", "DER")
     crx_id = hashlib.sha256(pub_der).digest()[:16]
     signed_data = _pb_field(1, crx_id)  # protobuf SignedData{ crx_id = 1 }
-    signature = _openssl("dgst", "-sha256", "-sign", str(CRX_KEY), stdin_bytes=signed_data)
+    signature = _openssl("dgst", "-sha256", "-sign", str(key), stdin_bytes=signed_data)
     # protobuf AsymmetricKeyProof{ public_key = 1, signature = 2 }
     proof = _pb_field(1, pub_der) + _pb_field(2, signature)
     # protobuf CrxFileHeader{ sha256_with_rsa = 2 (repeated), signed_header_data = 10000 }
