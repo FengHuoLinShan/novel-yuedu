@@ -73,6 +73,12 @@
       }
     },
 
+    /** 清除某 URL 的失败熔断计数（用户主动翻章/点击重试时允许重新请求，弱网 3 次瞬断不该判死刑） */
+    clearFail(url) {
+      const entry = this.cache.get(url);
+      if (entry && entry.status === 'failed') this.cache.delete(url);
+    },
+
     /** 取章节（带去重、缓存与失败熔断） */
     async getChapter(url) {
       const entry = this.cache.get(url);
@@ -83,6 +89,9 @@
           throw entry.error || new Error('已熔断');
         }
       }
+      // 进入本次尝试前先记下历史失败数：下方 pending 条目会覆盖 failed 条目，
+      // 失败时若从缓存读会永远拿到 pending，导致计数恒为 1、熔断形同虚设
+      const prevFails = entry && entry.status === 'failed' ? entry.count : 0;
       const promise = (async () => {
         try {
           const doc = await this.fetchDoc(url);
@@ -95,9 +104,7 @@
           this.prune();
           return chapter;
         } catch (err) {
-          const prev = this.cache.get(url);
-          const count = prev && prev.status === 'failed' ? prev.count + 1 : 1;
-          this.cache.set(url, { status: 'failed', count, error: err });
+          this.cache.set(url, { status: 'failed', count: prevFails + 1, error: err });
           throw err;
         }
       })();

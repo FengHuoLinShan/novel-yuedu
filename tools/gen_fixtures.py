@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成本地测试站点 fixture：utf8site/ 与 gbksite/，各含目录页 + 3 个章节页。
+"""生成本地测试站点 fixture：utf8site/ 与 gbksite/，各含目录页 + 3 个章节页；longsite/ 含 16 章（连读/收起回归）。
 模拟笔趣阁形态：杂乱布局、广告节点、水印文本、底部 上一章/目录/下一章 导航。
 运行：python3 tools/gen_fixtures.py，然后 python3 -m http.server -d test/fixtures 8080
 """
@@ -112,6 +112,19 @@ for ch in CHAPTERS:
     if len(ch["paras"]) < 30:
         ch["paras"] = (ch["paras"] + FILLER)[:30]
 
+# 长连读站点：16 章用于触发 DOM 章节数超限后的收起（_trimChapters）回归测试
+LONG_COUNT = 16
+LONG_CHAPTERS = [
+    {
+        "no": f"第{i}章",
+        "title": f"连读测试{i:02d}",
+        "prev": None if i == 1 else f"{i - 1}.html",
+        "next": "index.html" if i == LONG_COUNT else f"{i + 1}.html",
+        "paras": [f"（第{i}章开篇）长夜未央，客栈里的灯又亮了一晚。"] + FILLER[:29],
+    }
+    for i in range(1, LONG_COUNT + 1)
+]
+
 WATERMARKS = [
     "最快更新最新章节！",
     "请记住本书首发站点：booktest.local",
@@ -173,10 +186,10 @@ def chapter_page(site_title: str, ch: dict, encoding_name: str) -> str:
 """
 
 
-def index_page(site_title: str) -> str:
+def index_page(site_title: str, chapters: list) -> str:
     items = "".join(
         f'<li><a href="{i + 1}.html">{c["no"]} {c["title"]}</a></li>'
-        for i, c in enumerate(CHAPTERS)
+        for i, c in enumerate(chapters)
     )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -201,13 +214,17 @@ def write(path: Path, text: str, encoding: str):
 
 def main():
     # UTF-8 站
-    (FIX / "utf8site" / "index.html").write_text(index_page("山河剑经"), encoding="utf-8")
+    (FIX / "utf8site" / "index.html").write_text(index_page("山河剑经", CHAPTERS), encoding="utf-8")
     for i, ch in enumerate(CHAPTERS):
         write(FIX / "utf8site" / f"{i + 1}.html", chapter_page("山河剑经", ch, "utf-8"), "utf-8")
     # GBK 站（大量老站默认编码）
-    (FIX / "gbksite" / "index.html").write_text(index_page("听雨剑歌"), encoding="utf-8")
+    (FIX / "gbksite" / "index.html").write_text(index_page("听雨剑歌", CHAPTERS), encoding="utf-8")
     for i, ch in enumerate(CHAPTERS):
         write(FIX / "gbksite" / f"{i + 1}.html", chapter_page("听雨剑歌", ch, "gbk"), "gbk")
+    # 长连读站（16 章，UTF-8）：驱动滚动拼接直到触发章节收起
+    write(FIX / "longsite" / "index.html", index_page("长夜十六更", LONG_CHAPTERS), "utf-8")
+    for i, ch in enumerate(LONG_CHAPTERS):
+        write(FIX / "longsite" / f"{i + 1}.html", chapter_page("长夜十六更", ch, "utf-8"), "utf-8")
     print("done. serve with: python3 -m http.server -d test/fixtures 8080")
 
 

@@ -15,6 +15,7 @@
   const MAX_DOM_CHAPTERS = 12; // DOM 中最多保留的章节数（防内存膨胀）
   const KEEP_BEHIND = 5; // 当前章之后回收，当前章之前保留几章
   const PROGRESS_THROTTLE = 1500;
+  const CATALOG_RENDER_CAP = 3000; // 目录渲染条数上限，与 parseCatalog 的 3000 解析上限对齐（超长完本书也能翻到尾章）
 
   const CSS = `
     :host { all: initial; }
@@ -57,6 +58,8 @@
       flex: 1; overflow-y: auto; position: relative; overscroll-behavior: contain;
       padding: 84px 18px 96px; /* 顶部留足悬浮工具栏高度（书名+章节名两行约 60px），避免遮挡章节标题 */
       -webkit-overflow-scrolling: touch;
+      /* 收起上方章节时的位置补偿由 _trimChapters 手工执行，禁用原生滚动锚定防止双重偏移 */
+      overflow-anchor: none;
       scrollbar-width: thin; scrollbar-color: var(--nr-line) transparent;
     }
     .nr-scroll::-webkit-scrollbar { width: 8px; }
@@ -518,7 +521,7 @@
       let shown = 0;
       for (const item of list) {
         if (q && item.title.toLowerCase().indexOf(q) < 0) continue;
-        if (shown >= 800) break; // 超长书目保护
+        if (shown >= CATALOG_RENDER_CAP) break; // 超长书目保护（与解析上限一致）
         const d = document.createElement('div');
         d.className = 'nr-cat-item' + (item.url === curUrl ? ' nr-cur' : '');
         d.textContent = item.title;
@@ -643,12 +646,24 @@
       const state = this.state;
       if (state.chapters.length <= MAX_DOM_CHAPTERS) return;
       const minKeep = Math.max(0, state.currentIndex - KEEP_BEHIND);
+      // 被收起的章节都在视口上方：移除后内容变短，浏览器会把越界的 scrollTop 钳位到
+      // 新的最大值（阅读中拼接下一章时必然越界）→ 视口跳到新章末尾，需往回翻页找进度。
+      // 因此必须在移除前记下滚动位置，移除后按当前章元素的实际位移回退，让视口内容原地不动。
+      // （原生滚动锚定已用 overflow-anchor 关闭，此补偿是唯一位移来源）
+      const scroller = state.scroller;
+      const stBefore = scroller.scrollTop;
+      const heightBefore = scroller.scrollHeight;
+      const cur = state.chapters[state.currentIndex];
+      const refEl = cur && cur.el ? cur.el : null;
+      const refTopBefore = refEl ? refEl.offsetTop : 0;
+      let removedAny = false;
       for (let i = 0; i < minKeep && i < state.chapters.length; i++) {
         const c = state.chapters[i];
         if (c.el) {
           c.el.remove();
           c.el = null;
           state.collapsedCount++;
+          removedAny = true;
         }
       }
       if (state.collapsedCount > 0 && !state.collapsedNote) {
@@ -661,11 +676,24 @@
         state.collapsedNote.textContent = '已收起前 ' + state.collapsedCount + ' 章（按 ← 可翻回）';
       }
       NR.loader.prune(state.chapters.map((c) => c.data.url));
+      if (removedAny) {
+        // 用当前章元素的实际位移回滚：比 scrollHeight 差值更准，不受下方 :last-child
+        // 外距、尾部提示等与阅读位置无关的高度变化影响
+        const shift = refEl ? refTopBefore - refEl.offsetTop : heightBefore - scroller.scrollHeight;
+        if (shift > 0) scroller.scrollTop = Math.max(0, stBefore - shift);
+      }
     },
 
     _renderTail() {
       const state = this.state;
       const tail = state.tail;
+      if (state.appending) {
+        // 切 spinner 前锁定尾部高度：贴底阅读时尾部变矮会触发浏览器钳位 scrollTop，
+        // 造成正文轻微上跳（拼接下一章时尤其明显）
+        tail.style.minHeight = tail.offsetHeight + 'px';
+      } else {
+        tail.style.minHeight = '';
+      }
       const last = state.chapters[state.chapters.length - 1];
       tail.textContent = '';
       if (state.appending) {
@@ -723,6 +751,8 @@
       }
       state.appending = true;
       this._renderTail();
+      // scroll=true 即用户主动操作（翻章/点重试）：清除失败熔断再请求，弱网下瞬断可恢复
+      if (scroll) NR.loader.clearFail(url);
       try {
         const chapter = await NR.loader.getChapter(url);
         const idx = this._appendChapter(chapter);
