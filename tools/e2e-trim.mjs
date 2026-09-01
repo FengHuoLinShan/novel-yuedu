@@ -4,9 +4,12 @@
  *
  * 背景 bug：读到第 13 章起，每次拼接下一章都会把视口上方最旧的章节移出 DOM；
  * 内容变短后浏览器把越界的 scrollTop 钳位到新最大值 → 视口跳到新章末尾，需往回翻页找进度。
- * 修复：_trimChapters 在移除前记基准、按当前章元素位移回退（并关闭原生滚动锚定防双重偏移）。
+ * v0.2.10 起改为等高占位柱（.nr-pillow）：收起章节用等高 div 顶住原流高度，视口几何
+ * 零变化、scrollTop 零写入（旧机制按当前章元素位移回写补偿，曾诱发工具栏误弹）；
+ * 回填章节时按插入实测的流高度收缩占位柱（场景三/四）。
  *
- * 判定方式：以视口内某段落为锚点，拼接前后 getBoundingClientRect().top 变化必须 ≤ 2px。
+ * 判定方式：以视口内某段落为锚点，拼接前后 getBoundingClientRect().top 变化必须 ≤ 2px；
+ * 收起前后 scrollTop 必须逐位相等（零写入）。
  * 为消除“滚动事件 → 异步拼接”的竞态，构建满 12 章后关闭 autoAppend，
  * 直接在隔离世界调用 NR.reader._appendByUrl(url, false) —— 与自动拼接走同一条代码路径。
  *
@@ -107,6 +110,16 @@ async function until(cdp, expression, timeout = 10000, interval = 150) {
   }
 }
 
+/** 同 until，但表达式须在内容脚本隔离世界求值（NR.* 不可见于主世界） */
+async function untilCtx(cdp, ctx, expression, timeout = 10000, interval = 120) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    if (await evalJs(cdp, expression, ctx)) return true;
+    if (Date.now() > deadline) throw new Error('timeout: ' + expression.slice(0, 80));
+    await sleep(interval);
+  }
+}
+
 rmSync(PROFILE, { recursive: true, force: true });
 const proc = spawn(CHROME, [
   '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
@@ -159,6 +172,7 @@ async function runViewport(vp, extras) {
       return st.chapters[st.chapters.length - 1].data.nextUrl;
     })()`, ctx);
     const top0 = await anchorTop();
+    const stTop0 = await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`);
     const headerBefore = await evalJs(cdp, `${SR}.querySelector('.nr-chapter-name').textContent`);
 
     await evalJs(cdp, `NR.reader._appendByUrl(${JSON.stringify(nextUrl1)}, false)`, ctx); // 拼接第 13 章 → 触发收起
@@ -166,6 +180,7 @@ async function runViewport(vp, extras) {
     const top1 = await anchorTop();
     const jump1 = Math.abs(top1 - top0);
     check('首次收起（移除多章）视口内容不动', jump1 <= 2, `锚点位移 ${jump1.toFixed(1)}px（${top0.toFixed(1)}→${top1.toFixed(1)}）`);
+    check('首次收起 scrollTop 零写入（等高占位）', (await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`)) === stTop0, `${stTop0} → ${await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`)}`);
     check('DOM 章节窗口收缩', (await domCount()) === 8, '实际 ' + (await domCount()));
     check('收起提示条出现', (await evalJs(cdp, `${SR}.querySelector('.nr-collapsed').textContent`)).includes('已收起前 5 章'));
     check('当前章未变（头部章节名）', (await evalJs(cdp, `${SR}.querySelector('.nr-chapter-name').textContent`)) === headerBefore);
@@ -182,6 +197,7 @@ async function runViewport(vp, extras) {
     })()`, ctx);
     check('滚到底后当前章推进到第 13 章', curTitle.indexOf('第13章') === 0, curTitle);
     const top2 = await anchorTop();
+    const stTop2 = await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`);
     const nextUrl2 = await evalJs(cdp, `NR.reader.state.chapters[NR.reader.state.chapters.length - 1].data.nextUrl`, ctx);
 
     await evalJs(cdp, `NR.reader._appendByUrl(${JSON.stringify(nextUrl2)}, false)`, ctx); // 拼接第 14 章 → 滑窗再收起旧章
@@ -189,12 +205,68 @@ async function runViewport(vp, extras) {
     const top3 = await anchorTop();
     const jump2 = Math.abs(top3 - top2);
     check('滑窗收起（再移除旧章）视口内容不动', jump2 <= 2, `锚点位移 ${jump2.toFixed(1)}px（${top2.toFixed(1)}→${top3.toFixed(1)}）`);
+    check('滑窗收起 scrollTop 零写入（等高占位）', (await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`)) === stTop2, `${stTop2} → ${await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`)}`);
     const note2 = await evalJs(cdp, `${SR}.querySelector('.nr-collapsed').textContent`);
     check('滑窗后 DOM 章节维持窗口上限', (await domCount()) === 7 && note2.includes('已收起前 7 章'), `DOM=${await domCount()}，${note2}`);
 
     await evalJs(cdp, `NR.settings.autoAppend = true`, ctx); // 还原
 
+    // ---- 场景三：真实点击下三分之一翻页 → 自动拼接 → 收起（上报 bug 回归） ----
+    // 旧机制：收起后回写 scrollTop 补偿（回退近万 px）→ 滚动监听误判用户上滚 → 工具栏弹出。
+    // 新机制：等高占位柱顶住流高度，scrollTop 零写入，滚动序列只增不减。
+    const pillowH0 = await evalJs(cdp, `parseFloat(${SR}.querySelector('.nr-pillow').style.height)`);
+    check('场景三初始：占位柱已就位', pillowH0 > 0, '高度 ' + pillowH0);
+    await evalJs(cdp, `(()=>{const sc=${SR}.querySelector('.nr-scroll');sc.scrollTop=sc.scrollHeight-sc.clientHeight-900;})()`);
+    await sleep(450); // 等 _onScroll 判定当前章（余量 900 > 600，不触发拼接）
+    await evalJs(cdp, `NR.reader._hideHeader()`, ctx);
+    check('场景三初始：工具栏隐藏', await evalJs(cdp, `${SR}.querySelector('.nr-header').classList.contains('nr-hidden')`));
+    const len0 = await evalJs(cdp, `NR.reader.state.chapters.length`, ctx);
+    await evalJs(cdp, `(()=>{
+      const st=NR.reader.state;
+      st.__rec=[];
+      st.scroller.addEventListener('scroll', ()=>st.__rec.push(st.scroller.scrollTop));
+      return true;
+    })()`, ctx);
+    const pt = await evalJs(cdp, `(()=>{const r=document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-scroll').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.bottom-Math.max(48,r.height*0.12))};})()`);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+    await untilCtx(cdp, ctx, `NR.reader.state.appending===false && NR.reader.state.chapters.length>=${len0 + 1}`);
+    await sleep(300);
+    const rec = await evalJs(cdp, `NR.reader.state.__rec`, ctx);
+    const mono = Array.isArray(rec) && rec.length > 0 && rec.every((v, i) => i === 0 || v >= rec[i - 1] - 0.5);
+    check('点击翻页+拼接收起：滚动序列只增不减（无补偿回写）', mono, JSON.stringify(rec));
+    check('点击翻页+拼接收起：工具栏保持隐藏（上报 bug 回归）', await evalJs(cdp, `${SR}.querySelector('.nr-header').classList.contains('nr-hidden')`));
+    const domN = await evalJs(cdp, `${SR}.querySelectorAll('.nr-chapter').length`);
+    check('收起后 DOM 章节窗口维持上限', domN <= 12, '实际 ' + domN);
+    check('记录无重复', await evalJs(cdp, `NR.reader.state.chapters.length===new Set(NR.reader.state.chapters.map(c=>c.data.url)).size`, ctx));
+
     if (extras) {
+      // ---- 场景四：回填等高 + 程序滚动标记（v0.2.10） ----
+      // 把当前章推进到窗口上缘（模拟连续 goPrev 的稳态），其上一章必为已收起记录，
+      // _appendByUrl 命中恢复路径：回填 + 上跳。旧机制上跳会被 dy<-6 误判弹工具栏，
+      // 新机制 _scrollToChapter 置 progScroll 标记跳过手势判定。
+      await evalJs(cdp, `(()=>{const st=NR.reader.state;st.currentIndex=Math.max(0,st.currentIndex-5);return true;})()`, ctx);
+      const ci = await evalJs(cdp, `NR.reader.state.currentIndex`, ctx);
+      const backIdx = ci - 1;
+      check('场景四初始：目标章处于已收起状态', backIdx >= 0 && await evalJs(cdp, `!NR.reader.state.chapters[${backIdx}].el`, ctx));
+      const backUrl = await evalJs(cdp, `NR.reader.state.chapters[${backIdx}].data.url`, ctx);
+      const pillowH1 = await evalJs(cdp, `parseFloat(${SR}.querySelector('.nr-pillow').style.height)`);
+      const cntCollapsed = await evalJs(cdp, `NR.reader.state.collapsedCount`, ctx);
+      await evalJs(cdp, `NR.reader._hideHeader()`, ctx);
+      const r4 = await evalJs(cdp, `NR.reader._appendByUrl(${JSON.stringify(backUrl)}, true)`, ctx);
+      await sleep(600);
+      const el4 = await evalJs(cdp, `(()=>{const c=NR.reader.state.chapters[${backIdx}];const el=c&&c.el;return el?{top:el.offsetTop,h:el.offsetHeight,ps:el.querySelectorAll('.nr-p').length}:null;})()`, ctx);
+      check('回填成功且带正文', r4 === backIdx && !!el4 && el4.ps > 0, `结果 ${r4}，段落 ${el4 && el4.ps}`);
+      const st4 = await evalJs(cdp, `${SR}.querySelector('.nr-scroll').scrollTop`);
+      check('回填后视口落在该章', st4 >= el4.top - 30 && st4 <= el4.top + el4.h, `scrollTop ${st4}，章 [${el4.top}, ${el4.top + el4.h}]`);
+      check('回填上跳后工具栏保持隐藏（程序滚动标记）', await evalJs(cdp, `${SR}.querySelector('.nr-header').classList.contains('nr-hidden')`));
+      check('回填不产生重复记录', await evalJs(cdp, `NR.reader.state.chapters.filter(c=>c.data.url===${JSON.stringify(backUrl)}).length`, ctx) === 1);
+      const pillowH2 = await evalJs(cdp, `parseFloat((${SR}.querySelector('.nr-pillow')||{style:{height:'0px'}}).style.height)`);
+      check('占位柱按插入实测差值收缩', pillowH2 < pillowH1, `${pillowH1} → ${pillowH2}`);
+      check('当前章推进到回填章', await evalJs(cdp, `NR.reader.state.currentIndex`, ctx) === backIdx);
+      const note4 = await evalJs(cdp, `(${SR}.querySelector('.nr-collapsed')||{textContent:'(无)'}).textContent`);
+      check('收起提示随回填更新', note4.includes(`已收起前 ${cntCollapsed - 1} 章`), note4);
+
       // ---- 数值限制回归一：弱网熔断（3 次失败计数累积 + 用户主动重试清零） ----
       const badUrl = `${BASE}/longsite/999.html`;
       for (let i = 0; i < 3; i++) {

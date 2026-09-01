@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.9 · 安装包见 [Releases](../../releases)
+> 版本：0.2.10 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -109,7 +109,7 @@ node tools/test-core.mjs
 #    需 Playwright 缓存的 Chrome for Testing（正式版 Chrome 137+ 已移除 --load-extension）
 node tools/e2e-test.mjs "$PWD"
 
-# 5. 章节收起滚动补偿回归（桌面/手机视口，34 项断言）
+# 5. 章节收起等高占位回归（桌面/手机视口，66 项断言；含点击翻页后工具栏不误弹）
 node tools/e2e-trim.mjs "$PWD"
 
 # 6. 长时使用稳定性回归（生命周期/多标签页/DNR/写入节流，39 项断言，对应 STAB-001~010）
@@ -135,7 +135,7 @@ src/content/
   cleaner.js                行级文本清洗（水印/网址行/重复行/半角标点）
   extractor.js              三层正文提取管线 + 上一章/下一章/目录识别
   next-chapter.js           预加载器：fetch + 编码探测 + 解析缓存 + 熔断限速
-  reader-view.js            阅读视图：Shadow DOM、滚动拼接、快捷键、进度记忆
+  reader-view.js            阅读视图：Shadow DOM、等高占位滚动拼接、快捷键、进度记忆
   kbd-guard.js              主世界键盘隔离（world:MAIN）：阅读期间阻断站点 ←/→ 翻章脚本
   settings-panel.js         排版设置模型与面板 UI
   main.js                   入口：悬浮按钮、消息、黑名单、设置热更新

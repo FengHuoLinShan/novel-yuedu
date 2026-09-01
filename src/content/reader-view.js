@@ -59,7 +59,7 @@
       flex: 1; overflow-y: auto; position: relative; overscroll-behavior: contain;
       padding: 84px 18px 96px; /* 顶部留足悬浮工具栏高度（书名+章节名两行约 60px），避免遮挡章节标题 */
       -webkit-overflow-scrolling: touch;
-      /* 收起上方章节时的位置补偿由 _trimChapters 手工执行，禁用原生滚动锚定防止双重偏移 */
+      /* 章节收起/回填的几何由等高占位柱保持（_trimChapters），禁用原生滚动锚定防止双重偏移 */
       overflow-anchor: none;
       scrollbar-width: thin; scrollbar-color: var(--nr-line) transparent;
     }
@@ -80,9 +80,14 @@
       text-align: center; color: var(--nr-muted); font-size: .85em;
       margin: 2.5em 0; letter-spacing: .5em;
     }
+    /* 等高占位柱：顶住已收起上方章节的流高度，收起/回填全程视口几何与 scrollTop 不变。
+       margin 必须为 0，保证自身不产生额外流高度干扰锚点差值测量 */
+    .nr-pillow { position: relative; margin: 0; }
+    /* 收起提示贴在占位柱底部（脱离文档流，增删不影响几何），上滚时第一眼可见 */
     .nr-collapsed {
+      position: absolute; left: 0; right: 0; bottom: 16px;
       text-align: center; color: var(--nr-muted); font-size: .8em;
-      border: 1px dashed var(--nr-line); border-radius: 8px; padding: 8px; margin-bottom: 24px;
+      border: 1px dashed var(--nr-line); border-radius: 8px; padding: 8px;
     }
     .nr-resume {
       display: flex; align-items: center; gap: 10px;
@@ -238,6 +243,8 @@
         headerHideTimer: 0,
         progressTimer: 0,
         collapsedCount: 0,
+        pillowEl: null, // 等高占位柱：顶住已收起上方章节的流高度
+        progScroll: false, // 程序性滚动进行中（翻章跳转/进度恢复）：滚动监听跳过工具栏手势判定
         restoredRatio: null,
         catalogList: null,
         catalogLoading: false,
@@ -802,18 +809,30 @@
       if (state.chapters.length <= MAX_DOM_CHAPTERS) return;
       const minKeep = Math.max(0, state.currentIndex - KEEP_BEHIND);
       const maxKeep = Math.min(state.chapters.length - 1, state.currentIndex + KEEP_AHEAD);
-      // 被收起的上方章节：移除后内容变短，浏览器会把越界的 scrollTop 钳位到
-      // 新的最大值（阅读中拼接下一章时必然越界）→ 视口跳到新章末尾，需往回翻页找进度。
-      // 因此必须在移除前记下滚动位置，移除后按当前章元素的实际位移回退，让视口内容原地不动。
-      // （原生滚动锚定已用 overflow-anchor 关闭，此补偿是唯一位移来源；
-      //   下方章节的移除不影响 offsetTop，无需补偿）
-      const scroller = state.scroller;
-      const stBefore = scroller.scrollTop;
-      const heightBefore = scroller.scrollHeight;
-      const cur = state.chapters[state.currentIndex];
-      const refEl = cur && cur.el ? cur.el : null;
-      const refTopBefore = refEl ? refEl.offsetTop : 0;
-      let removedAny = false;
+      // 章节收起采用等高占位柱：移除上方章节后用 pillow div 顶住其原流高度，
+      // 视口几何零变化、scrollTop 零写入 —— 不再有补偿回写（回写曾被滚动监听
+      // 误判为用户上滚而弹出工具栏，也是早期"拼接跳页"bug 的根源）。
+      // 关键顺序：先按"相邻下一存在元素"的 offsetTop 差实测各章流高度并预涨
+      // 占位柱，再移除元素 —— 全程内容高度只增不减，杜绝中途布局刷新把越界
+      // scrollTop 钳位（读取 offsetTop 会强制同步布局，先删后涨必被钳位）。
+      // 下方章节移除不影响上方几何，无需占位。
+      let flow = 0;
+      let hasFlow = false;
+      for (let i = 0; i < minKeep && i < state.chapters.length; i++) {
+        const el = state.chapters[i].el;
+        if (!el) continue;
+        // 流高度用 rect 差值（亚像素）而非 offsetTop 差（已取整）：移动端 dsf 下
+        // 布局高度带小数，取整差会让占位柱偏差 1px，贴底阅读时 scrollTop 被钳掉 1px
+        const rectTop = el.getBoundingClientRect().top;
+        let next = null;
+        for (let j = i + 1; j < state.chapters.length; j++) {
+          if (state.chapters[j].el) { next = state.chapters[j].el; break; }
+        }
+        // 理论上必有下一存在元素（当前章必有 el）；无则退化为 rect 高度（不含外距，宁少勿多）
+        flow += next ? next.getBoundingClientRect().top - rectTop : el.getBoundingClientRect().height;
+        hasFlow = true;
+      }
+      if (hasFlow) this._growPillow(flow);
       for (let i = 0; i < minKeep && i < state.chapters.length; i++) {
         const c = state.chapters[i];
         if (c.el) {
@@ -821,7 +840,6 @@
           c.el = null;
           c.data = this._chapterMeta(c.data);
           state.collapsedCount++;
-          removedAny = true;
         }
       }
       // 回翻场景：窗口后方（远于 KEEP_AHEAD）的章节同样收起，DOM 不随回翻章数增长
@@ -833,24 +851,54 @@
           c.data = this._chapterMeta(c.data);
         }
       }
-      if (state.collapsedCount > 0 && !state.collapsedNote) {
-        const note = document.createElement('div');
-        note.className = 'nr-collapsed';
-        state.collapsedNote = note;
-        state.pages.insertBefore(note, state.pages.firstChild);
-      }
-      if (state.collapsedNote) {
-        state.collapsedNote.textContent = '已收起前 ' + state.collapsedCount + ' 章（按 ← 可翻回）';
-      }
+      this._ensureCollapsedNote();
       // 只锁定窗口内仍持正文的章节：被裁剪的历史章节允许从 loader 缓存淘汰，
       // 否则成功缓存会随阅读章数线性增长
       NR.loader.prune(state.chapters.filter((c) => c.el).map((c) => c.data.url));
-      if (removedAny) {
-        // 用当前章元素的实际位移回滚：比 scrollHeight 差值更准，不受下方 :last-child
-        // 外距、尾部提示等与阅读位置无关的高度变化影响
-        const shift = refEl ? refTopBefore - refEl.offsetTop : heightBefore - scroller.scrollHeight;
-        if (shift > 0) scroller.scrollTop = Math.max(0, stBefore - shift);
+    },
+
+    /** 占位柱长高：顶住已收起上方章节的流高度（等高占位，几何与 scrollTop 全程不变） */
+    _growPillow(h) {
+      const state = this.state;
+      if (!state.pillowEl) {
+        const pillow = document.createElement('div');
+        pillow.className = 'nr-pillow';
+        pillow.style.height = '0px';
+        state.pages.insertBefore(pillow, state.pages.firstChild);
+        state.pillowEl = pillow;
       }
+      state.pillowEl.style.height = (parseFloat(state.pillowEl.style.height) || 0) + h + 'px';
+    },
+
+    /** 占位柱缩短：回填章节时按插入实测的流高度收缩（收敛到 0 时移除占位柱） */
+    _shrinkPillow(h) {
+      const state = this.state;
+      if (!state.pillowEl || !(h > 0)) return;
+      const next = Math.max(0, (parseFloat(state.pillowEl.style.height) || 0) - h);
+      state.pillowEl.style.height = next + 'px';
+      if (next === 0) this._removePillow();
+    },
+
+    _removePillow() {
+      const state = this.state;
+      if (state.pillowEl) {
+        state.pillowEl.remove();
+        state.pillowEl = null;
+      }
+    },
+
+    /** 收起提示条：置于占位柱底部（绝对定位脱离文档流，增删不影响几何） */
+    _ensureCollapsedNote() {
+      const state = this.state;
+      if (state.collapsedCount <= 0) return;
+      if (!state.pillowEl) this._growPillow(0);
+      if (!state.collapsedNote) {
+        const note = document.createElement('div');
+        note.className = 'nr-collapsed';
+        state.pillowEl.appendChild(note);
+        state.collapsedNote = note;
+      }
+      state.collapsedNote.textContent = '已收起前 ' + state.collapsedCount + ' 章（按 ← 可翻回）';
     },
 
     _renderTail() {
@@ -979,14 +1027,32 @@
       const el = this._buildChapterEl(rec.data);
       let refIdx = idx + 1;
       while (refIdx < state.chapters.length && !state.chapters[refIdx].el) refIdx++;
-      if (refIdx < state.chapters.length) state.pages.insertBefore(el, state.chapters[refIdx].el);
+      const refNode = refIdx < state.chapters.length ? state.chapters[refIdx].el : null;
+      // 整个回填 + 随后的跳转按一次程序性导航处理：过程中任何布局变化引发的
+      // 滚动事件都不参与工具栏手势判定（scroll=true 路径随后由 _scrollToChapter 再次置位）
+      state.progScroll = true;
+      requestAnimationFrame(() => { state.progScroll = false; });
+      // 回填同样等高：占位柱按插入产生的实测流高度收缩，插入点下方内容零位移。
+      // 无下方锚点（插到末尾）时用 pages 容器高度差实测，不依赖具体外距数值。
+      // 同上用 rect（亚像素）防移动端取整偏差
+      const base = refNode ? refNode.getBoundingClientRect().top : state.pages.getBoundingClientRect().height;
+      if (refNode) state.pages.insertBefore(el, refNode);
       else state.pages.appendChild(el);
       rec.el = el;
+      const grown = refNode ? refNode.getBoundingClientRect().top - base : state.pages.getBoundingClientRect().height - base;
+      if (grown > 0) this._shrinkPillow(grown);
       this._trimChapters();
       if (state.collapsedCount > 0) state.collapsedCount--;
-      if (state.collapsedCount === 0 && state.collapsedNote) {
-        state.collapsedNote.remove();
-        state.collapsedNote = null;
+      if (state.collapsedCount === 0) {
+        if (state.collapsedNote) {
+          state.collapsedNote.remove();
+          state.collapsedNote = null;
+        }
+        // 收起区已全部回填：移除占位柱（残余高度已被实测差值归零，误差仅数 px
+        // 且发生在跳转导航过程中，不可见）
+        this._removePillow();
+      } else {
+        this._ensureCollapsedNote();
       }
       return true;
     },
@@ -998,7 +1064,13 @@
       const el = state.chapters[idx].el;
       requestAnimationFrame(() => {
         if (!this._alive(state)) return;
-        state.scroller.scrollTo({ top: Math.max(0, el.offsetTop - 24), behavior: 'auto' });
+        // 程序性滚动：置标记让 _onScroll 跳过工具栏手势判定（大幅上跳会被
+        // dy<-6 误判为用户上滚而弹工具栏）；scroll 事件先于下一帧 rAF 派发，到帧即清除
+        const top = Math.max(0, el.offsetTop - 24);
+        state.progScroll = true;
+        state.lastScrollTop = top; // 滚到原位不派发事件时同样保持记账一致
+        state.scroller.scrollTo({ top, behavior: 'auto' });
+        requestAnimationFrame(() => { state.progScroll = false; });
         // 回翻恢复的章节插回后，目标滚动位置可能与当前 scrollTop 完全重合，
         // 浏览器对"滚到原位"不派发 scroll 事件 → 显式导航必须自行推进当前章判定
         if (state.currentIndex !== idx) {
@@ -1080,11 +1152,13 @@
         this._onCurrentChanged();
       }
 
-      // 头部显示/隐藏
+      // 头部显示/隐藏：程序性滚动（翻章跳转/进度恢复）跳过手势判定，只记账
       const dy = st - state.lastScrollTop;
       state.lastScrollTop = st;
-      if (dy < -6 || st < 100) this._showHeader();
-      else if (dy > 10 && st > 200) this._hideHeader();
+      if (!state.progScroll) {
+        if (dy < -6 || st < 100) this._showHeader();
+        else if (dy > 10 && st > 200) this._hideHeader();
+      }
 
       // 距底阈值：自动拼接 / 预取
       const remaining = scroller.scrollHeight - st - scroller.clientHeight;
@@ -1319,7 +1393,13 @@
                 const scroller = state.scroller;
                 if (cur && cur.el) {
                   const span = Math.max(1, cur.el.offsetHeight - scroller.clientHeight);
-                  scroller.scrollTop = cur.el.offsetTop + ratio * span;
+                  const top = cur.el.offsetTop + ratio * span;
+                  // 程序性滚动置标记：恢复位置距当前 scrollTop 可能很大，避免被
+                  // 手势判定误读（同 _scrollToChapter）
+                  state.progScroll = true;
+                  state.lastScrollTop = top;
+                  scroller.scrollTop = top;
+                  requestAnimationFrame(() => { state.progScroll = false; });
                 }
               });
             } else if (record.url && !state.landingIntent) {

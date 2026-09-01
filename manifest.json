@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "小说悦读",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "沉浸式小说阅读模式：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录。",
   "icons": {
     "16": "icons/icon16.png",
