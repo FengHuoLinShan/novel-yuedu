@@ -1,20 +1,25 @@
 * { box-sizing: border-box; }
 body {
   width: 300px;
-  margin: 0;
+  max-width: 100vw; /* 手机浏览器扩展面板视口可能窄于 300px，禁止横向溢出 */
+  margin: 0 auto;
   font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #2c2c2c;
   background: #fafaf8;
+  transition: opacity .15s;
 }
+body.nr-closing { opacity: .6; pointer-events: none; }
 .wrap { padding: 14px 14px 12px; }
 .head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .logo {
   width: 36px; height: 36px; border-radius: 10px;
   background: #4f46e5; color: #fff; font-size: 18px;
   display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
 }
+.head > div { min-width: 0; flex: 1; } /* 窄面板下长域名也能触发省略号而非撑破布局 */
 .name { font-size: 14px; font-weight: 700; }
-.sub { font-size: 11px; color: #8a8a85; max-width: 210px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 11px; color: #8a8a85; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .primary {
   width: 100%; padding: 9px 0; margin: 2px 0 12px;
   border: 0; border-radius: 10px; cursor: pointer;
@@ -52,4 +57,15 @@ body {
 .row input { accent-color: #4f46e5; }
 .foot {
   margin-top: 12px; font-size: 10.5px; color: #9a9a94; line-height: 1.7; text-align: center;
+}
+
+/* 手机浏览器的扩展面板：触控热区 ≥44px、字号加大、最近阅读列表内部滚动防超面板高度 */
+@media (pointer: coarse) {
+  body { font-size: 14px; }
+  .primary { padding: 13px 0; font-size: 14px; }
+  .row { padding: 12px 0; }
+  .row span { font-size: 13.5px; }
+  .recent-item { padding: 11px 12px; }
+  .recent-item .r-book { font-size: 13.5px; }
+  .recent { max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; }
 }

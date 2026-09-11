@@ -36,7 +36,8 @@
     .nr-header {
       position: absolute; top: 0; left: 0; right: 0; z-index: 20;
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 10px 16px;
+      padding: calc(10px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) 10px calc(16px + env(safe-area-inset-left, 0px));
+      line-height: 1.5; /* UI 框架高度稳定：不随用户阅读行距 --nr-lh（1.5–2.6）缩放 */
       background: color-mix(in srgb, var(--nr-bg) 88%, transparent);
       backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--nr-line);
@@ -57,7 +58,7 @@
     .nr-act.nr-accent { color: var(--nr-accent); font-weight: 600; }
     .nr-scroll {
       flex: 1; overflow-y: auto; position: relative; overscroll-behavior: contain;
-      padding: 84px 18px 96px; /* 顶部留足悬浮工具栏高度（书名+章节名两行约 60px），避免遮挡章节标题 */
+      padding: 84px calc(18px + env(safe-area-inset-right, 0px)) calc(96px + env(safe-area-inset-bottom, 0px)) calc(18px + env(safe-area-inset-left, 0px)); /* 顶部留足悬浮工具栏高度（书名+章节名两行约 60px），避免遮挡章节标题；底部避开全面屏手势条 */
       -webkit-overflow-scrolling: touch;
       /* 章节收起/回填的几何由等高占位柱保持（_trimChapters），禁用原生滚动锚定防止双重偏移 */
       overflow-anchor: none;
@@ -88,12 +89,14 @@
       position: absolute; left: 0; right: 0; bottom: 16px;
       text-align: center; color: var(--nr-muted); font-size: .8em;
       border: 1px dashed var(--nr-line); border-radius: 8px; padding: 8px;
+      line-height: 1.5;
     }
     .nr-resume {
       display: flex; align-items: center; gap: 10px;
       border: 1px solid var(--nr-line); background: var(--nr-panel);
       border-radius: 10px; padding: 10px 14px; margin: 0 0 26px;
       font-size: .85em; color: var(--nr-muted);
+      line-height: 1.5;
     }
     .nr-resume > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nr-resume-go {
@@ -102,7 +105,7 @@
     }
     .nr-resume-go:hover { background: color-mix(in srgb, var(--nr-accent) 10%, transparent); }
     .nr-resume-x { all: unset; cursor: pointer; color: var(--nr-muted); padding: 5px 8px; flex-shrink: 0; }
-    .nr-tail { text-align: center; color: var(--nr-muted); font-size: .9em; padding: 26px 0 8px; }
+    .nr-tail { text-align: center; color: var(--nr-muted); font-size: .9em; padding: 26px 0 8px; line-height: 1.5; }
     .nr-tail .nr-btn {
       all: unset; cursor: pointer; font: inherit;
       border: 1px solid var(--nr-line); border-radius: 999px;
@@ -123,8 +126,10 @@
       width: min(320px, 88vw); background: var(--nr-panel);
       border-left: 1px solid var(--nr-line);
       transform: translateX(105%); transition: transform .25s ease;
-      overflow-y: auto; padding: 18px 18px 30px;
+      overflow-y: auto;
+      padding: 18px calc(18px + env(safe-area-inset-right, 0px)) calc(30px + env(safe-area-inset-bottom, 0px)) 18px;
       font-size: 13px; color: var(--nr-fg);
+      line-height: 1.5; /* 同 .nr-header：设置面板不随阅读行距缩放 */
     }
     .nr-panel-open .nr-panel { transform: translateX(0); }
     .nr-panel-inner .nr-panel-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
@@ -154,9 +159,13 @@
       transform: translateX(-105%); transition: transform .25s ease;
       display: flex; flex-direction: column;
       font-size: 13px; color: var(--nr-fg);
+      line-height: 1.5; /* 同 .nr-header：目录不随阅读行距缩放 */
     }
     .nr-catalog-open .nr-catalog { transform: translateX(0); }
-    .nr-catalog-head { padding: 14px 14px 12px; border-bottom: 1px solid var(--nr-line); }
+    .nr-catalog-head {
+      padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 12px calc(14px + env(safe-area-inset-left, 0px));
+      border-bottom: 1px solid var(--nr-line);
+    }
     .nr-catalog-title { font-size: 14px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
     .nr-catalog-title .nr-cat-count { font-size: 11px; font-weight: 400; color: var(--nr-muted); }
     .nr-catalog-close { all: unset; cursor: pointer; color: var(--nr-muted); font-size: 15px; padding: 2px 8px; border-radius: 6px; }
@@ -178,16 +187,25 @@
     .nr-cat-empty { padding: 24px 14px; text-align: center; color: var(--nr-muted); line-height: 2; }
     .nr-cat-empty .nr-btn { all: unset; cursor: pointer; font: inherit; border: 1px solid var(--nr-line); border-radius: 999px; padding: 6px 20px; color: var(--nr-fg); }
     /* 手机适配：窄窗口或触屏设备（老站常无 viewport 声明，手机上布局宽度仍是 980px，
-       仅凭 max-width 会漏掉这类站点，需叠加 pointer: coarse） */
+       仅凭 max-width 会漏掉这类站点，需叠加 pointer: coarse）。
+       所有可点按元素触控热区统一 ≥44px（Material/Apple HIG 下限） */
     @media (max-width: 640px), (pointer: coarse) {
-      .nr-scroll { padding: 72px 12px 70px; }
+      .nr-scroll { padding-top: 72px; padding-bottom: calc(70px + env(safe-area-inset-bottom, 0px)); }
       .nr-act { padding: 10px 8px; min-height: 44px; }
       .nr-act[data-act="prev"], .nr-act[data-act="next"] {
         font-size: 20px; line-height: 1;
         min-width: 44px; justify-content: center; padding: 0 12px;
       }
       .nr-act .nr-act-text { display: none; }
-      .nr-cat-item { padding: 11px 10px; }
+      .nr-resume-go { padding: 12px 14px; min-height: 44px; }
+      .nr-resume-x { padding: 12px; min-height: 44px; }
+      .nr-tail .nr-btn { padding: 12px 28px; min-height: 44px; }
+      .nr-catalog-close { padding: 10px 12px; min-height: 44px; min-width: 44px; }
+      .nr-catalog-search { padding: 12px; min-height: 44px; }
+      .nr-cat-item { padding: 13px 10px; min-height: 44px; }
+      .nr-check { padding: 11px 0; min-height: 44px; }
+      .nr-reset { padding: 12px; min-height: 44px; }
+      .nr-row > select { padding: 10px 8px; min-height: 44px; }
     }
   `;
 

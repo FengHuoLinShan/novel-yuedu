@@ -85,7 +85,7 @@
           /* 标记失败也能打开，只是不自动进阅读模式 */
         }
         chrome.tabs.create({ url: r.url });
-        window.close();
+        closePopup();
       });
       listEl.appendChild(item);
     }
@@ -150,16 +150,54 @@
     loadRecent();
   }
 
-  function bindEvents() {
-    $('openReader').addEventListener('click', async () => {
-      if (!currentTab || currentTab.id == null) return;
+  /**
+   * 确定性收起面板。旧实现先 await 内容脚本响应再 window.close()：
+   * 内容脚本 open() 要等正文提取（可达数秒），open() reject 时 sendResponse
+   * 永不回调 → window.close() 永不执行，面板"点击进入后不收起"。
+   * 现在改为点击即收起；浏览器（如部分手机浏览器的扩展面板）忽略
+   * window.close() 且无关闭 API 时，延迟给出可见反馈兜底，避免"点了没反应"。
+   * 不走 chrome.windows.remove 兜底：扩展面板不是 windows API 意义上的窗口，
+   * getCurrent 可能返回用户真实弹窗型浏览窗口，误删会连标签页一起带走。
+   */
+  function closePopup() {
+    try { document.body.classList.add('nr-closing'); } catch (e) { /* 面板已不在 */ }
+    try { window.close(); } catch (e) { /* 同上 */ }
+    setTimeout(() => {
       try {
-        await chrome.tabs.sendMessage(currentTab.id, { type: 'NR_TOGGLE' });
-      } catch (e) {
-        // 内容脚本未注入时走后台兜底注入
-        await chrome.runtime.sendMessage({ type: 'NR_TOGGLE_ACTIVE_TAB' });
-      }
-      window.close();
+        if (!document.body || !document.body.isConnected) return; // 已成功收起
+        const btn = document.getElementById('openReader');
+        if (btn) {
+          btn.textContent = '已进入阅读模式，可关闭此面板';
+          btn.disabled = true;
+        }
+      } catch (e) { /* 面板已不在 */ }
+    }, 300);
+  }
+
+  function sendToggle() {
+    if (!currentTab || currentTab.id == null) return;
+    const fallbackInject = () => {
+      try {
+        chrome.runtime.sendMessage({ type: 'NR_TOGGLE_ACTIVE_TAB' }, () => { void chrome.runtime.lastError; });
+      } catch (e) { /* 后台不可达 */ }
+    };
+    try {
+      chrome.tabs.sendMessage(currentTab.id, { type: 'NR_TOGGLE' }, () => {
+        const err = chrome.runtime.lastError;
+        if (!err) return; // 已送达，无需等响应（收起不等回程）
+        // 仅"无接收者"（内容脚本未注入）才走后台兜底；响应通道中途断开
+        // 不代表未送达，不得重复触发，否则开出的阅读器会被再次 toggle 关掉
+        if (/Receiving end does not exist/i.test(String(err.message || ''))) fallbackInject();
+      });
+    } catch (e) {
+      fallbackInject();
+    }
+  }
+
+  function bindEvents() {
+    $('openReader').addEventListener('click', () => {
+      sendToggle();
+      closePopup();
     });
 
     $('floatingButton').addEventListener('change', async (e) => {

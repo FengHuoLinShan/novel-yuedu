@@ -24,7 +24,7 @@ const CHROME =
   process.env.NR_TEST_BROWSER ||
   '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const EXT = resolve(process.argv[2] || '.');
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -136,7 +136,8 @@ function staticChecks() {
   const cmd = mf.commands && mf.commands['toggle-reader'];
   check('manifest 声明 mac suggested_key', !!(cmd && cmd.suggested_key && cmd.suggested_key.mac === 'Command+Shift+K'),
     cmd && cmd.suggested_key ? JSON.stringify(cmd.suggested_key) : '无 toggle-reader command');
-  check('manifest 版本为 0.2.9', mf.version === '0.2.9', '实际 ' + mf.version);
+  // 版本只验合法性，不钉死具体号：功能回归不应随每次发版改测试
+  check('manifest 版本为合法 semver', /^\d+\.\d+\.\d+$/.test(mf.version), '实际 ' + mf.version);
 }
 
 // ---------------- 场景：站点键盘脚本隔离 + 自身快捷键 ----------------

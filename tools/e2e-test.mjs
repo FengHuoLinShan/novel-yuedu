@@ -17,7 +17,7 @@ const EXT = resolve(process.argv[2] || '.');
 const HEADED = process.argv.includes('--headed');
 const PORT = 9333;
 const PROFILE = '/tmp/nr-e2e-profile';
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

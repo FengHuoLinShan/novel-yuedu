@@ -58,7 +58,8 @@
     btn.title = '进入小说阅读模式（' + toggleHint + '）';
     btn.textContent = '📖';
     btn.style.cssText =
-      'position:fixed;right:20px;bottom:24px;width:44px;height:44px;border-radius:50%;' +
+      'position:fixed;right:calc(20px + env(safe-area-inset-right, 0px));bottom:calc(24px + env(safe-area-inset-bottom, 0px));' +
+      'width:44px;height:44px;border-radius:50%;' +
       'background:rgba(30,30,36,.88);color:#fff;font-size:20px;line-height:44px;text-align:center;' +
       'cursor:pointer;z-index:2147483646;box-shadow:0 4px 14px rgba(0,0,0,.28);' +
       'user-select:none;-webkit-user-select:none;opacity:.55;transition:opacity .2s,transform .2s;';
@@ -193,7 +194,12 @@
         NR.reader.close();
         sendResponse({ ok: true, open: false });
       } else {
-        NR.reader.open().then((ok) => sendResponse({ ok, open: ok }));
+        // open() 失败必须也回话，否则发送方（popup/测试）会一直等响应
+        NR.reader.open()
+          .then((ok) => sendResponse({ ok, open: ok }))
+          .catch(() => {
+            try { sendResponse({ ok: false, open: false }); } catch (e) { /* 通道已关 */ }
+          });
       }
       return true; // 异步响应
     }

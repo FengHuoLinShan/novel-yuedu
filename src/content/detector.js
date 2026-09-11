@@ -81,6 +81,7 @@
     box.textContent = msg;
     box.style.cssText =
       'background:rgba(20,20,24,.92);color:#fff;font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;' +
+      'max-width:min(86vw, 560px);box-sizing:border-box;text-align:center;overflow-wrap:break-word;' +
       'padding:8px 16px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);';
     root.appendChild(box);
     document.documentElement.appendChild(host);

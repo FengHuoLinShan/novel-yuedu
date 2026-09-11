@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.10 · 安装包见 [Releases](../../releases)
+> 版本：0.2.11 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -48,7 +48,7 @@ Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / L
 
 ## Android 使用
 
-Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展 v0.2.0 起做了移动端适配（触控热区、惯性滚动、双击缩放消除、面板窄屏布局；v0.2.8 起顶部按钮统一 44px 触控热区、上下章按钮加大，且无 viewport 声明的老站也能命中移动端样式），Android 上经支持扩展侧载的浏览器安装：
+Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展 v0.2.0 起做了移动端适配（触控热区、惯性滚动、双击缩放消除、面板窄屏布局；v0.2.8 起顶部按钮统一 44px 触控热区、上下章按钮加大，且无 viewport 声明的老站也能命中移动端样式；v0.2.11 起尺寸全面动态适配：工具栏弹出的扩展面板自适应各浏览器面板宽度并确定性收起，阅读视图 UI 框架高度与阅读行距解耦、全部可点按元素触控热区 ≥44px、悬浮按钮/工具栏/滚动区/侧滑面板按 `env(safe-area-inset-*)` 避开全面屏手势条与刘海，提示条窄屏不再溢出），Android 上经支持扩展侧载的浏览器安装：
 
 - **Microsoft Edge（安卓）**：从 [Releases](../../releases) 下载 `novel-yuedu-v*.crx`，在 Edge 隐藏的「开发人员选项」里以 `Extension Install by CRX` 安装，步骤见下
 - **Lemur / 狐猴浏览器**：支持商店扩展与本地 `.crx` 侧载，操作类似（Kiwi Browser 已于 2025 年初停止维护并从 Play 下架，不建议再作为宿主）

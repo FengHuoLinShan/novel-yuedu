@@ -26,7 +26,7 @@ const CHROME =
 const EXT = resolve(process.argv[2] || '.');
 const PORT = 9341;
 const PROFILE = '/tmp/nr-lifecycle-profile';
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -437,7 +437,8 @@ try {
     aBook:(s['p:'+${JSON.stringify(keyA)}]||{}).bookTitle, bBook:(s['p:'+${JSON.stringify(keyB)}]||{}).bookTitle,
     legacyGone:s.progress===undefined, legacyMigrated:!!s['p:legacy-book']
   })))`, ctxA);
-  check('两本书的进度都存在且均为本次会话新记录', r7.a && r7.b && r7.aTs > t0 && r7.bTs > t0, JSON.stringify(r7));
+  // ts 用 >=：保存与 t0 同毫秒完成时严格大于会误报（机器越快越容易触发）
+  check('两本书的进度都存在且均为本次会话新记录', r7.a && r7.b && r7.aTs >= t0 && r7.bTs >= t0, JSON.stringify(r7));
   check('两本书标题各自正确', r7.aBook && r7.bBook && r7.aBook !== r7.bBook, JSON.stringify(r7));
   check('旧版整包 progress 已迁移且旧记录保留', r7.legacyGone && r7.legacyMigrated, JSON.stringify(r7));
 
@@ -470,7 +471,7 @@ try {
   // ============ 九、两 host 同时阅读的 DNR 会话规则（STAB-009） ============
   console.log('\n[九] 按标签页跟踪 DNR：互不覆盖、关闭一页不影响另一页');
   await evalJs(cdpA, `NR.reader.close()`, cdpA.isolatedContextId()).catch(() => {});
-  const cdpL = await openPage(`http://localhost:8080/utf8site/1.html`); // 第二个 host：localhost
+  const cdpL = await openPage(`${BASE.replace('127.0.0.1', 'localhost')}/utf8site/1.html`); // 第二个 host：localhost（同 fixture 服务器换域名，勿硬编码端口）
   const ctxL = cdpL.isolatedContextId();
   // B 页重开阅读器（127.0.0.1 host）
   await evalJs(cdpB, `NR.reader.open()`, cdpB.isolatedContextId());

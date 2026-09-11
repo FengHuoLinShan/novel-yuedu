@@ -24,7 +24,7 @@ const CHROME =
   process.env.NR_TEST_BROWSER ||
   '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const EXT = resolve(process.argv[2] || '.');
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -260,6 +260,43 @@ async function runMobileButtons() {
       return out;
     })()`);
     check('其余头部按钮高度 ≥ 44', others.length === 0, '不足: ' + others.join(', '));
+
+    // 设置面板控件触控热区（v0.2.11 全热区覆盖）
+    await js(`${SR}.querySelector('[data-act="settings"]').click()`);
+    await sleep(400);
+    const panel = await js(`(()=>{
+      const sr = ${SR};
+      const h = (sel) => { const el = sr.querySelector(sel); return el ? Math.round(el.getBoundingClientRect().height) : -1; };
+      return { open: sr.querySelector('.nr-root').classList.contains('nr-panel-open'),
+        select: h('.nr-row > select'), check: h('.nr-check'), reset: h('.nr-reset') };
+    })()`);
+    check('设置面板已打开', panel.open === true, '');
+    check('字体下拉触控热区 ≥44', panel.select >= 44, panel.select);
+    check('开关行触控热区 ≥44', panel.check >= 44, panel.check);
+    check('恢复默认按钮触控热区 ≥44', panel.reset >= 44, panel.reset);
+
+    // 目录控件触控热区
+    await js(`${SR}.querySelector('[data-act="catalog"]').click()`);
+    await until(cdp, `${SR}.querySelectorAll('.nr-cat-item').length > 0`, 10000);
+    await sleep(200);
+    const cat = await js(`(()=>{
+      const sr = ${SR};
+      const h = (sel) => { const el = sr.querySelector(sel); return el ? Math.round(el.getBoundingClientRect().height) : -1; };
+      const w = (sel) => { const el = sr.querySelector(sel); return el ? Math.round(el.getBoundingClientRect().width) : -1; };
+      return { close: h('.nr-catalog-close'), closeW: w('.nr-catalog-close'),
+        search: h('.nr-catalog-search'), item: h('.nr-cat-item') };
+    })()`);
+    check('目录关闭钮触控热区 ≥44×44', cat.close >= 44 && cat.closeW >= 44, JSON.stringify(cat));
+    check('目录搜索框触控热区 ≥44', cat.search >= 44, cat.search);
+    check('目录项触控热区 ≥44', cat.item >= 44, cat.item);
+
+    // UI 框架与阅读行距解耦：行距拉满 2.6，工具栏按钮高度不得跟着膨胀
+    const actBefore = await js(`Math.round(${SR}.querySelector('.nr-header .nr-act').getBoundingClientRect().height)`);
+    await evalJs(cdp, `NR.saveSettings({ lineHeight: 2.6 })`, cdp.isolatedContextId());
+    await sleep(300);
+    const actAfter = await js(`Math.round(${SR}.querySelector('.nr-header .nr-act').getBoundingClientRect().height)`);
+    check('工具栏高度不随阅读行距缩放（1.9→2.6 不变）', Math.abs(actAfter - actBefore) <= 1, `before=${actBefore} after=${actAfter}`);
+    await evalJs(cdp, `NR.saveSettings({ lineHeight: 1.9 })`, cdp.isolatedContextId());
   } finally {
     try { cdp.ws.close(); } catch (e) { /* 已关闭 */ }
   }

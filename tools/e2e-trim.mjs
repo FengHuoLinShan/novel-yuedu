@@ -32,7 +32,7 @@ const CHROME =
 const EXT = resolve(process.argv[2] || '.');
 const PORT = 9337;
 const PROFILE = '/tmp/nr-trim-profile';
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 
 const VIEWPORTS = [
   { name: '桌面 1000×900', width: 1000, height: 900, mobile: false, dsf: 1 },
