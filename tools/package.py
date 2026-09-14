@@ -87,10 +87,10 @@ def build(out_name, manifest_obj):
 # Chrome / Chromium（含 Android：Kiwi、Edge Canary）
 chrome_zip = build(f"novel-reader-v{version}.zip", manifest)
 
-# Firefox（桌面 + Android）：注入事件页 background，随 scripts 先载入域名表
+# Firefox（桌面 + Android）：注入事件页 background（service-worker.js 无其他依赖）
 ff_manifest = dict(manifest)
 ff_manifest["background"] = {
-    "scripts": ["src/background/ad-domains.js", "src/background/service-worker.js"],
+    "scripts": ["src/background/service-worker.js"],
 }
 build(f"novel-reader-v{version}-firefox.zip", ff_manifest)
 

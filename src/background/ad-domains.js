@@ -1,8 +1,9 @@
-// 广告/统计域名列表（service worker 通过 importScripts 加载）
-// 用途：
-//  1. background 在阅读模式打开时，按当前站点注册 declarativeNetRequest 会话规则（仅该站生效）
-//  2. rules/dnr-blocklist.json 由 tools/gen_dnr.py 从本列表生成（全局静态规则，默认关闭，可在 popup 开启）
-// 注意：只放确定性高的广告联盟与统计域名，不放可能影响正常站点功能的大厂主域
+// 广告/统计域名列表
+// 用途：rules/dnr-blocklist.json 由 tools/gen_dnr.py 从本列表生成
+// （全局静态规则，默认关闭，可在 popup 开启）。
+// 注意：阅读模式的会话级拦截已改为白名单式（service-worker.js 只放行本站域名），
+// 本列表仅服务于上述可选的全局静态规则集；只放确定性高的广告联盟与统计域名，
+// 不放可能影响正常站点功能的大厂主域
 self.AD_DOMAINS = [
   // 国际广告联盟
   "doubleclick.net",

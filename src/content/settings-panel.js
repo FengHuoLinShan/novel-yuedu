@@ -20,7 +20,7 @@
     autoAppend: true,    // 滚动到底自动拼接下一章
     clickPaging: true,   // 点击屏幕上/下三分之一区域翻页
     floatingButton: true, // 显示悬浮按钮
-    blockAdsOnRead: true  // 阅读时对本站启用广告域名拦截（会话级 DNR 规则）
+    blockAdsOnRead: true  // 阅读时启用白名单式拦截：仅放行本站域名的请求（会话级 DNR 规则）
   };
 
   NR.FONT_STACKS = {
@@ -240,7 +240,7 @@
     frag.appendChild(check('预加载下一章', () => s.preload, (v) => setAndSave({ preload: v })));
     frag.appendChild(check('滚动到底自动拼接', () => s.autoAppend, (v) => setAndSave({ autoAppend: v })));
     frag.appendChild(check('点击上下区域翻页', () => s.clickPaging, (v) => setAndSave({ clickPaging: v })));
-    frag.appendChild(check('阅读时屏蔽本站广告', () => s.blockAdsOnRead, (v) => setAndSave({ blockAdsOnRead: v })));
+    frag.appendChild(check('阅读时只放行本站请求', () => s.blockAdsOnRead, (v) => setAndSave({ blockAdsOnRead: v })));
 
     const reset = document.createElementNS(ns, 'button');
     reset.className = 'nr-reset';

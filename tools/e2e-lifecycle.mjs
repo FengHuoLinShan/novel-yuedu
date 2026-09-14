@@ -132,12 +132,12 @@ async function swEval(expression) {
   }
 }
 
-/** 轮询会话规则的 (host 集合, 条数)，直到匹配或超时 */
+/** 轮询会话规则（白名单式：每 host 一条），直到匹配或超时 */
 async function untilRules(predicate, timeout = 8000) {
   const deadline = Date.now() + timeout;
   let last = '';
   for (;;) {
-    const raw = await swEval(`chrome.declarativeNetRequest.getSessionRules().then(rs => JSON.stringify({hosts:[...new Set(rs.map(r=>r.condition.initiatorDomains[0]))].sort(), n:rs.length, adn:self.AD_DOMAINS.length}))`).catch((e) => null);
+    const raw = await swEval(`chrome.declarativeNetRequest.getSessionRules().then(rs => JSON.stringify(rs.map(r => ({h: r.condition.initiatorDomains[0], ex: (r.condition.excludedRequestDomains || []).slice().sort(), t: r.condition.resourceTypes}))))`).catch((e) => null);
     if (raw) {
       last = raw;
       const info = JSON.parse(raw);
@@ -478,13 +478,14 @@ try {
   await sleep(300);
   await evalJs(cdpL, `NR.reader.open()`, ctxL);
   await sleep(800);
-  const ad = await swEval('self.AD_DOMAINS ? self.AD_DOMAINS.length : 0');
-  let rules = await untilRules((i) => i.n === i.adn * 2);
-  check('两个 host 同时阅读各有一组会话规则', rules.hosts.join(',') === '127.0.0.1,localhost' && rules.n === ad * 2, JSON.stringify(rules));
+  let rules = await untilRules((rs) => rs.length === 2);
+  check('两个 host 同时阅读各有一条白名单规则', rules.map((r) => r.h).sort().join(',') === '127.0.0.1,localhost', JSON.stringify(rules));
+  check('规则为白名单式（放行域包含发起域自身）', rules.every((r) => r.ex.includes(r.h)), JSON.stringify(rules));
+  check('拦截类型含 main_frame（掐断已驻留脚本的跨站跳转）', rules.every((r) => r.t.includes('main_frame')), JSON.stringify(rules));
 
   await evalJs(cdpL, `NR.reader.close()`, ctxL).catch(() => {}); // 关闭 localhost 页阅读器
-  rules = await untilRules((i) => i.n === i.adn);
-  check('关闭一页只移除该 host 的规则，另一页不受影响', rules.hosts.join(',') === '127.0.0.1', JSON.stringify(rules));
+  rules = await untilRules((rs) => rs.length === 1);
+  check('关闭一页只移除该 host 的规则，另一页不受影响', rules[0].h === '127.0.0.1', JSON.stringify(rules));
 
   // 关闭设置后重开：走真实链路（saveSettings 持久化后 open 才能从 storage 读到 false）
   await evalJs(cdpB, `NR.saveSettings({blockAdsOnRead:false}); NR.persistSettingsNow()`, cdpB.isolatedContextId());
@@ -492,12 +493,12 @@ try {
   await evalJs(cdpB, `NR.reader.close()`, cdpB.isolatedContextId()).catch(() => {});
   await evalJs(cdpB, `NR.reader.open()`, cdpB.isolatedContextId());
   await sleep(800);
-  rules = await untilRules((i) => i.n === 0);
-  check('关闭“阅读时屏蔽本站广告”后重开不产生会话规则', rules.n === 0, JSON.stringify(rules));
+  rules = await untilRules((rs) => rs.length === 0);
+  check('关闭“阅读时只放行本站请求”后重开不产生会话规则', rules.length === 0, JSON.stringify(rules));
 
   await closeTab(cdpB); // 整标签页关闭（onRemoved 清理）
-  rules = await untilRules((i) => i.n === 0);
-  check('关闭标签页后无残留规则', rules.n === 0, JSON.stringify(rules));
+  rules = await untilRules((rs) => rs.length === 0);
+  check('关闭标签页后无残留规则', rules.length === 0, JSON.stringify(rules));
   await closeTab(cdpL);
   await closeTab(cdpA);
 

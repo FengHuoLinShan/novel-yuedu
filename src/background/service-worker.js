@@ -1,14 +1,12 @@
 /**
  * service-worker.js — MV3 后台
  * 1. 快捷键 / 工具栏触发阅读模式：优先向活动标签页发消息；接收不到时按需注入内容脚本后重试
- * 2. 会话级 DNR 广告拦截：阅读模式打开时，仅对当前站点生效；关闭时移除
+ * 2. 会话级 DNR 白名单拦截：阅读模式打开时对当前站点生效——只放行本站域名的请求，
+ *    其余（广告/统计脚本、iframe、弹窗、跨站跳转 main_frame）一律拦截；关闭时移除
  *
- * 跨浏览器：Chrome 走 service_worker（此处用 importScripts 载入域名表）；
- * Firefox（含 Android）走 manifest.background.scripts，域名表已随脚本数组先载入。
+ * 跨浏览器：Chrome 走 service_worker；Firefox（含 Android）由 tools/package.py
+ * 注入 background.scripts 事件页字段加载本文件（无需 importScripts 任何依赖）。
  */
-if (typeof importScripts === 'function' && typeof self.AD_DOMAINS === 'undefined') {
-  importScripts('ad-domains.js');
-}
 
 // 与 manifest content_scripts 保持一致（兜底注入用）
 const CONTENT_SCRIPT_FILES = [
@@ -25,7 +23,22 @@ const CONTENT_SCRIPT_FILES = [
 ];
 
 const SESSION_RULE_BASE_ID = 9000;
-const RULES_PER_HOST = 100; // 每 host 实际用 AD_DOMAINS.length（44）条，按 100 步长分配互不重叠的规则 ID
+
+/**
+ * 会话规则拦截的资源类型。逐项对照当前环境支持的 ResourceType 取交集而非写死全集：
+ * 缺失枚举值（如 Firefox 无 POPUP）会让整批规则被拒，白名单完全失效。
+ * main_frame 必须在内：广告脚本常在阅读模式开启前就已加载驻留，之后用定时器/触屏
+ * 劫持强制 location 跳外域——网络层掐断这次导航请求，才不至于真的落到广告页。
+ */
+function blockableTypes() {
+  const RT = (chrome.declarativeNetRequest && chrome.declarativeNetRequest.ResourceType) || {};
+  return [
+    'MAIN_FRAME', 'SUB_FRAME', 'SCRIPT', 'XMLHTTPREQUEST', 'IMAGE', 'MEDIA',
+    'STYLESHEET', 'FONT', 'WEBSOCKET', 'OTHER', 'PING', 'POPUP'
+  ]
+    .map((k) => RT[k])
+    .filter(Boolean);
+}
 
 async function toggleReaderInActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -131,31 +144,28 @@ async function handleDnrSession(enable, host, tabId) {
   await rebuildSessionRules();
 }
 
-/** 由所有活跃阅读标签页的 host 重建会话规则（同 host 多标签页只生成一组） */
+/** 由所有活跃阅读标签页的 host 重建会话规则（同 host 多标签页只生成一组，每组一条） */
 async function rebuildSessionRules() {
   const dnr = chrome.declarativeNetRequest;
   const existing = await dnr.getSessionRules();
   // 先删后建必须在同一次 updateSessionRules 里完成：分开会有拦截空窗，
   // 且重复 add 已存在的规则 ID 会报 Duplicate rule ID（整批被拒）
   const removeRuleIds = existing.filter((r) => r.id >= SESSION_RULE_BASE_ID).map((r) => r.id);
-  const addRules = [];
-  const hosts = [...new Set(readingTabs.values())];
-  if (self.AD_DOMAINS) {
-    hosts.forEach((host, hi) => {
-      self.AD_DOMAINS.forEach((domain, di) => {
-        addRules.push({
-          id: SESSION_RULE_BASE_ID + hi * RULES_PER_HOST + di,
-          priority: 1,
-          action: { type: 'block' },
-          condition: {
-            urlFilter: '||' + domain + '^',
-            initiatorDomains: [host],
-            resourceTypes: ['script', 'image', 'sub_frame', 'xmlhttprequest', 'other', 'media']
-          }
-        });
-      });
-    });
-  }
+  const addRules = [...new Set(readingTabs.values())].map((host, hi) => ({
+    id: SESSION_RULE_BASE_ID + hi,
+    priority: 1,
+    action: { type: 'block' },
+    condition: {
+      // 白名单式：拦"本站发起、目标域名不是本站"的全部请求。盗版站的弹窗/跳转广告
+      // 脚本普遍用随机子域+高位端口动态下发，黑名单永远追不全，白名单一次覆盖。
+      // 放行域含去 www. 的裸域（DNR 域名匹配自带子域展开，裸域条目即放行全部
+      // 子域）；跨域镜像站的章节链接会被拦，属可接受代价（关闭
+      // “阅读时只放行本站请求”设置即可恢复）
+      initiatorDomains: [host],
+      excludedRequestDomains: [...new Set([host, host.replace(/^www\./, '')])],
+      resourceTypes: blockableTypes()
+    }
+  }));
   if (!removeRuleIds.length && !addRules.length) return;
   await dnr.updateSessionRules({ removeRuleIds, addRules });
 }

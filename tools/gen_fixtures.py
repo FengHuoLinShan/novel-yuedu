@@ -225,6 +225,9 @@ def main():
     write(FIX / "longsite" / "index.html", index_page("长夜十六更", LONG_CHAPTERS), "utf-8")
     for i, ch in enumerate(LONG_CHAPTERS):
         write(FIX / "longsite" / f"{i + 1}.html", chapter_page("长夜十六更", ch, "utf-8"), "utf-8")
+    # 静态 JS 探针：e2e-adguard 用 <script src> 探测 DNR 对 script 类型请求的拦截/放行
+    # （html 当 script 会被浏览器按 MIME 拒执行，onerror 与拦截不可区分，必须用真 .js）
+    write(FIX / "adstub.js", "// e2e-adguard script 探针（内容无需副作用）\n", "utf-8")
     print("done. serve with: python3 -m http.server -d test/fixtures 8080")
 
 
