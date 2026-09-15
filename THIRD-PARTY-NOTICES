@@ -1,28 +1,47 @@
 # Third-Party Notices
 
-本扩展内置（vendored）以下第三方库，未做功能性修改。各库的完整许可证文本可在对应源文件头部或下方链接查看。
+本扩展内置（vendored）以下第三方库，**未做任何功能性修改**（校验值与官方发布版逐字节一致）。各库的完整许可证文本可在对应源文件头部或下方链接查看。
 
-## 1. Readability & Readability-readerable
+> 版本号由 checksum 与官方发布 tag 逐一对齐确定。提交 AMO 时须在 "Notes for Reviewers" 提供下列链接（须用发布 tag，不得用 `master`、不得用 CDN）。
+
+## 1. Readability & Readability-readerable —— 0.6.0
 
 - 来源：https://github.com/mozilla/readability
-- 文件：`src/lib/Readability.js`、`src/lib/Readability-readerable.js`
+- 文件与校验（与官方 0.6.0 发布文件逐字节一致）：
+  - `src/lib/Readability.js` — `sha256 34dcab3d0832d0019f02990eed6b6124e029e8c32b9f0c6f2550544ff8dff174`
+  - `src/lib/Readability-readerable.js` — `sha256 a98d28805804c1986ceed470678a3f409f150ee7f1d227f8c8239c005d21de65`
+- 链接（发布 tag）：
+  - https://github.com/mozilla/readability/blob/0.6.0/Readability.js
+  - https://github.com/mozilla/readability/blob/0.6.0/Readability-readerable.js
 - 版权：Copyright (c) 2010 Arc90 Inc
 - 许可证：Apache License 2.0
   https://www.apache.org/licenses/LICENSE-2.0
 
-## 2. DOMPurify
+## 2. DOMPurify —— 3.2.6
 
 - 来源：https://github.com/cure53/DOMPurify
-- 文件：`src/lib/purify.min.js`（版本 3.2.6）
+- 文件与校验（与官方 `dist/purify.min.js` 逐字节一致；压缩由官方发行版自带，非本项目压缩）：
+  - `src/lib/purify.min.js` — `sha256 89e1fa7647cb495370d3a997ace4387f5d15d9f4c5af12352c53daa400956287`
+- 链接（发布 tag）：
+  - https://github.com/cure53/DOMPurify/blob/3.2.6/dist/purify.min.js
 - 版权：Copyright (c) Cure53 and other contributors
 - 许可证：Apache License 2.0 或 Mozilla Public License 2.0（双重许可，本项目按 Apache-2.0 使用）
   https://www.apache.org/licenses/LICENSE-2.0
   https://www.mozilla.org/media/MPL/2.0/index.txt
 
-## 3. OpenCC 词典数据
+## 3. OpenCC 词典数据（仅作生成器输入）
 
-- 来源：https://github.com/BYVoid/OpenCC（data/dictionary 下的 STCharacters/TSCharacters/STPhrases/TSPhrases）
-- 文件：`src/lib/chinese-convert.js`（由 `tools/gen_cc.py` 生成：单字取第一候选做 1:1 映射，词组仅保留逐字转换会出错的消歧条目，另对少量异体字输出做了正体化校正）
+- 来源：https://github.com/BYVoid/OpenCC（`data/dictionary/` 下的 STCharacters / TSCharacters / STPhrases / TSPhrases）
+- **锁定 commit**：`c363a7ba51d487950982bd8a589211ffbfd95ba1`（2026-09-09）——不使用 `master`：
+  master 会漂移，无法保证 reviewer 零差异重建，且不符合 AMO「第三方须用发布版本」的要求
+- 词典随仓库分发于 `tools/data/opencc/`，构建时**离线**读取；`tools/gen_cc.py` 读取前逐个校验 SHA256，不符即报错退出：
+  - `STCharacters.txt` — `sha256 a0ca1601c70648cf48b33c3c6210ccbecc5c7eead4b4c3daf76587ba2c03582b`
+  - `TSCharacters.txt` — `sha256 737c21c66f55a419dd6956cb3089476cdefc5a36877452631617696df1e5d925`
+  - `STPhrases.txt` — `sha256 f6eab5e5c6dd7640597878d3dfc6599ee1279d2bc91561eadd8e114194e2925a`
+  - `TSPhrases.txt` — `sha256 35c1eb677b02b0e846b4004199e26c433e969c264e765952c410d1f73b837ef6`
+- 生成物：`src/lib/chinese-convert.js`
+  （`sha256 539533a5a1265677c4b6f34b2c1f10f90b8218fd8c656fac90c314f929b61f80`）
+  由 `tools/gen_cc.py` 生成：单字取第一候选做 1:1 映射，词组仅保留逐字转换会出错的消歧条目，另对少量异体字输出做了正体化校正
 - 版权：Copyright (c) BYVoid <byvoid@byvoid.com>
 - 许可证：Apache License 2.0
   https://www.apache.org/licenses/LICENSE-2.0

@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.14 · 安装包见 [Releases](../../releases)
+> 版本：0.2.15 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -79,10 +79,14 @@ Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展
 ## 打包
 
 ```bash
-python3 tools/package.py   # 产出 Chrome 主包 zip / Firefox zip / AMO 提交 XPI / Android 侧载 CRX3，并自校验签名
+python3 tools/package.py   # 产出 Chrome 主包 zip / Firefox zip / AMO 提交 XPI / AMO 源码包 / Android 侧载 CRX3
 ```
 
-zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件；`dist/novel-yuedu-v<版本>.xpi` 与 Firefox 包同内容、仅扩展名换成 AMO/Firefox 规范的 `.xpi`，供 addons.mozilla.org 提交或自签；CRX3 由脚本用发布私钥直接签名，产出 `dist/novel-yuedu-v<版本>.crx` 一并作为 Release 附件。打包为**可复现构建**：同一源码连续打包字节完全一致（`manifest.json` 的时间戳取自源文件而非当前时刻）。`dist/` 与私钥均不纳入版本库，且**私钥绝不放在项目目录内**（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密），查找顺序：环境变量 `NR_CRX_KEY` → `~/.config/novel-yuedu/crx-private-key.pem` → `tools/crx-private-key.pem`（旧位置，仅过渡兼容并提示迁移）。找不到私钥时报错退出而**不会自动生成**——静默换钥会让扩展 ID 悄悄改变、安卓侧载老用户更新断链；确需换 ID 用 `python3 tools/package.py --gen-key` 显式生成（老用户须重装并丢本地进度）。
+zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件；`dist/novel-yuedu-v<版本>.xpi` 与 Firefox 包同内容、仅扩展名换成 AMO/Firefox 规范的 `.xpi`，供 addons.mozilla.org 提交或自签；CRX3 由脚本用发布私钥直接签名，产出 `dist/novel-yuedu-v<版本>.crx` 一并作为 Release 附件。打包为**逐字节可复现构建**：zip 条目时间戳固定为 `1980-01-01`，因此重跑生成器（内容不变但 mtime 变了）后再打包，产物字节仍恒定。
+
+AMO 源码包 `dist/novel-yuedu-v<版本>-source.zip`：Mozilla 要求凡含机器生成代码的扩展（本扩展的 `chinese-convert.js`、图标、Firefox manifest 变体）都必须提交源码与构建说明，使 reviewer 能本地零差异重建——构建步骤与预期校验值见 [BUILD.md](BUILD.md)。开关：`--no-crx` 跳过 CRX3 签名（reviewer 无发布私钥）、`--no-source` 跳过源码包。
+
+`dist/` 与私钥均不纳入版本库，且**私钥绝不放在项目目录内**（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密），查找顺序：环境变量 `NR_CRX_KEY` → `~/.config/novel-yuedu/crx-private-key.pem` → `tools/crx-private-key.pem`（旧位置，仅过渡兼容并提示迁移）。找不到私钥时报错退出而**不会自动生成**——静默换钥会让扩展 ID 悄悄改变、安卓侧载老用户更新断链；确需换 ID 用 `python3 tools/package.py --gen-key` 显式生成（老用户须重装并丢本地进度）。
 
 手动 zip 转 crx（备选，效果等同；在纯英文路径下中转，规避 Chrome 对中文路径密钥参数的解析问题）：
 
@@ -140,7 +144,7 @@ node tools/e2e-popup.mjs "$PWD"
 ```
 manifest.json               MV3 配置（内容脚本按序加载，无打包）
 rules/sites.json            站点规则表（generic 通用选择器 + 具名站点覆盖）
-src/lib/                    vendored：Readability / Readability-readerable / DOMPurify / chinese-convert.js（OpenCC 字表，tools/gen_cc.py 生成）
+src/lib/                    vendored：Readability 0.6.0 / Readability-readerable 0.6.0 / DOMPurify 3.2.6 / chinese-convert.js（OpenCC 字表，tools/gen_cc.py 离线生成）
 src/content/
   detector.js               公共工具、导航链接正则、小说页检测
   storage.js                chrome.storage 适配器与可注入测试缝（local / sync）
@@ -159,7 +163,9 @@ src/content/
   main.js                   入口：悬浮按钮、消息、站点启停、设置热更新
 src/background/             service worker：命令分发、按需注入、会话级 DNR
 src/popup/                  工具栏弹窗
-tools/                      图标/fixture/简繁字表生成器 + 共享测试基座（harness.mjs）+ 单元/e2e 测试
+tools/                      图标/fixture/简繁字表生成器 + 打包器 + 共享测试基座（harness.mjs）+ 单元/e2e 测试
+tools/data/opencc/          锁定的 OpenCC 词典（生成器输入，commit c363a7ba51，供离线复现字表）
+BUILD.md                    构建说明（AMO 源码审查用：命令 + 预期校验值）
 test/fixtures/              本地小说站（UTF-8 与 GBK）
 CONTEXT.md                  领域术语表（书籍/章节/章节窗口/网络层防护/页面层守卫等）
 docs/adr/                   架构决策记录（ADR-0001~0004）

@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""打包扩展为可上传/侧载的 zip 与 crx（仅运行时文件，排除 test/tools/README）。
+"""打包扩展为可上传/侧载的 zip、xpi、crx 与 AMO 源码包（仅运行时文件，排除 test/tools/README）。
 
-产出四个包：
+产出五个包：
   dist/novel-reader-v<版本>.zip          —— Chrome / Edge / Android Chromium（Kiwi、Edge Canary）
   dist/novel-reader-v<版本>-firefox.zip  —— Firefox 桌面与 Android（注入 background.scripts 事件页字段，
                                             该字段会让 Chrome 报 manifest 警告，故从主包剥离）
   dist/novel-yuedu-v<版本>.xpi           —— 与 firefox.zip 同内容，AMO 提交/自签用的规范扩展名
+  dist/novel-yuedu-v<版本>-source.zip    —— AMO 源码包（生成器 + 锁定词典 + BUILD.md，供 reviewer
+                                            零差异重建），详见 BUILD.md
   dist/novel-yuedu-v<版本>.crx           —— CRX3 签名包，安卓 Kiwi / Edge Canary 侧载用
+
+开关：
+  --no-crx     跳过 CRX3 签名（AMO 源码审查场景，reviewer 无发布私钥）
+  --no-source  跳过 AMO 源码包
+  --gen-key    显式生成新的 CRX 签名私钥（换 ID，安卓老用户须重装）
 
 CRX 签名私钥不放在项目目录内（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密）：
   - 查找顺序：环境变量 NR_CRX_KEY → ~/.config/novel-yuedu/crx-private-key.pem
@@ -20,7 +27,6 @@ import os
 import struct
 import subprocess
 import sys
-import time
 import zipfile
 from pathlib import Path
 
@@ -74,19 +80,29 @@ def iter_files():
             yield f, f.relative_to(ROOT).as_posix()
 
 
+# 可复现构建：zip 条目时间戳固定，产物字节不随文件 mtime 变化。
+# 否则重新跑一次 gen_cc.py / gen_icons.py（内容不变但 mtime 变了）就会得到不同校验和，
+# 而 AMO 源码审查要求 reviewer 重建后与提交产物零差异。1980-01-01 是 zip 格式的时间下界。
+FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _write_entry(z, arc, data: bytes):
+    zi = zipfile.ZipInfo(arc, FIXED_ZIP_TIME)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.external_attr = 0o644 << 16
+    z.writestr(zi, data)
+
+
 def build(out_name, manifest_obj):
     out = dist / out_name
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for f, arc in iter_files():
             if f == manifest_path:
-                # manifest 是改写后的内容（Firefox 变体不同），不能直接 z.write；但时间戳必须
-                # 取自源文件而非当前时刻，否则每次打包容器字节都变、同一源码产出不同校验和。
-                zi = zipfile.ZipInfo("manifest.json", time.localtime(manifest_path.stat().st_mtime)[:6])
-                zi.compress_type = zipfile.ZIP_DEFLATED
-                zi.external_attr = 0o644 << 16
-                z.writestr(zi, json.dumps(manifest_obj, ensure_ascii=False, indent=2))
+                # manifest 是改写后的内容（Firefox 变体不同），不能直接 z.write
+                data = json.dumps(manifest_obj, ensure_ascii=False, indent=2).encode("utf-8")
             else:
-                z.write(f, arc)
+                data = f.read_bytes()
+            _write_entry(z, arc, data)
     print(f"{out.relative_to(ROOT)}  {out.stat().st_size} bytes（{out.stat().st_size / 1024:.1f} KB）")
     return out
 
@@ -103,6 +119,51 @@ build(f"novel-reader-v{version}-firefox.zip", ff_manifest)
 
 # AMO 提交用：与 firefox 包同内容，仅扩展名换成规范的 .xpi（Firefox 加载/自签都认它）
 build(f"novel-yuedu-v{version}.xpi", ff_manifest)
+
+
+# ---------------- AMO 源码包 ----------------
+# 扩展内含机器生成代码（chinese-convert.js / icons / manifest 变体），AMO 要求提交源码包
+# 并能让 reviewer 本地零差异重建。此处产出可直接上传的源码包。
+SOURCE_INCLUDE = ["manifest.json", "src", "rules", "icons", "BUILD.md", "THIRD-PARTY-NOTICES"]
+SOURCE_EXTRA = [
+    "tools/gen_cc.py",
+    "tools/gen_icons.py",
+    "tools/package.py",
+    "tools/data/opencc/STCharacters.txt",
+    "tools/data/opencc/TSCharacters.txt",
+    "tools/data/opencc/STPhrases.txt",
+    "tools/data/opencc/TSPhrases.txt",
+]
+
+
+def build_source():
+    out = dist / f"novel-yuedu-v{version}-source.zip"
+    n = 0
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for name in SOURCE_INCLUDE:
+            p = ROOT / name
+            if p.is_file():
+                _write_entry(z, name, p.read_bytes())
+                n += 1
+                continue
+            for f in sorted(p.rglob("*")):
+                if not f.is_file() or f.name in EXCLUDE_NAMES or "__pycache__" in f.parts:
+                    continue
+                _write_entry(z, f.relative_to(ROOT).as_posix(), f.read_bytes())
+                n += 1
+        for name in SOURCE_EXTRA:
+            p = ROOT / name
+            if not p.is_file():
+                sys.exit(f"错误：源码包缺少必需文件 {name}")
+            _write_entry(z, name, p.read_bytes())
+            n += 1
+    print(f"{out.relative_to(ROOT)}  {out.stat().st_size} bytes"
+          f"（{out.stat().st_size / 1024:.1f} KB，{n} 个文件）")
+    return out
+
+
+if "--no-source" not in sys.argv:
+    build_source()
 
 
 # ---------------- CRX3（安卓侧载） ----------------
@@ -241,6 +302,12 @@ def verify_crx(path: Path):
         assert "manifest.json" in z.namelist(), "CRX 载荷缺少 manifest.json"
 
 
-ext_id = build_crx(chrome_zip)
-verify_crx(dist / f"novel-yuedu-v{version}.crx")
-print(f"完成：Chrome 主包 + Firefox 变体包 + AMO 提交 XPI + 安卓侧载 CRX3（自校验通过，扩展 ID {ext_id}）")
+if "--no-crx" in sys.argv:
+    # AMO 源码审查只需重建 zip/xpi；CRX 签名依赖本机发布私钥，reviewer 没有，
+    # 故提供该开关，使其能在无密钥环境下完整重建可核对产物。
+    print("已跳过 CRX3 签名（--no-crx）：AMO 审查只需 zip / xpi")
+else:
+    ext_id = build_crx(chrome_zip)
+    verify_crx(dist / f"novel-yuedu-v{version}.crx")
+    print(f"CRX3 自校验通过，扩展 ID {ext_id}")
+print("完成：Chrome 主包 + Firefox 变体包 + AMO 提交 XPI + AMO 源码包（+ 安卓侧载 CRX3）")

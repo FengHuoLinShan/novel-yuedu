@@ -16,9 +16,9 @@ Firefox（桌面 / Android）**强制要求扩展经 AMO 签名**，未签名的
 >
 > **From November 3, 2025, all new extensions must adopt** the Firefox built-in data collection consent system. Extensions must state if and what data they collect or transmit.
 
-→ v0.2.13 及更早的 manifest 缺该字段，**新提交会在校验阶段被拒**。v0.2.14 已补上。
+→ v0.2.13 及更早的 manifest 缺该字段，**新提交会在校验阶段被拒**。v0.2.14 起已补上（当前 v0.2.15）。
 
-**v0.2.14 manifest 现状**（与官方文档 "No data collection" 示例**逐字一致**，官方示例同样不写 `optional`）：
+**当前 manifest（v0.2.15）**（与官方文档 "No data collection" 示例**逐字一致**，官方示例同样不写 `optional`）：
 
 ```json
 "browser_specific_settings": {
@@ -65,9 +65,8 @@ Firefox（桌面 / Android）**强制要求扩展经 AMO 签名**，未签名的
 
 | 文件 | 说明 |
 |---|---|
-| `dist/novel-yuedu-v<版本>.xpi` | AMO 提交用（与 `-firefox.zip` 同内容，规范扩展名） |
-| `dist/novel-reader-v<版本>-firefox.zip` | 同内容，AMO 也接受 zip 上传 |
-| **源码包**（需制作） | **必需**，见第 9 节 —— 本扩展含机器生成代码 |
+| `dist/novel-yuedu-v0.2.15.xpi` | AMO 提交用（与 `-firefox.zip` 同内容，规范扩展名） |
+| `dist/novel-yuedu-v0.2.15-source.zip` | **源码包（必需）**，与 XPI 一同上传，见第 9 节 |
 
 生成命令：
 
@@ -77,7 +76,7 @@ python3 tools/package.py
 
 XPI 关键字段（已核对）：`manifest_version: 3`、`background.scripts`（Firefox 事件页，**不含** `service_worker`）、`gecko.id = novel-yuedu@tywww.dev`、`strict_min_version: 128.0`、`data_collection_permissions.required = ["none"]`。
 
-`tools/package.py` 为可复现构建：同一源码连续打包字节完全一致。
+`tools/package.py` 为**逐字节可复现构建**：zip 条目时间戳固定，重跑生成器后再打包产物字节仍恒定。
 
 ---
 
@@ -212,9 +211,14 @@ https://github.com/cure53/DOMPurify/blob/3.2.6/dist/purify.min.js
 
 压缩版属第三方库的官方发行文件，按第三方库链接规则处理即可（checksum 一致），不因此额外要求我们提交 DOMPurify 的源码构建。
 
-### OpenCC 词典数据（**需先处理，见第 9 节**）
+### OpenCC 词典数据（只作生成器输入，已锁定并随源码包分发）
 
-`src/lib/chinese-convert.js` 由 `tools/gen_cc.py` 从 OpenCC 词典生成，词典本身是第三方数据输入。当前生成来源是 **`master` 快照**，不符合「必须用发布 tag」的要求。
+```
+https://github.com/BYVoid/OpenCC   （词典位于 data/dictionary/）
+锁定 commit：c363a7ba51d487950982bd8a589211ffbfd95ba1
+```
+
+`src/lib/chinese-convert.js` 由 `tools/gen_cc.py` 从 OpenCC 词典**离线**生成。词典不属"库代码"而是**生成器输入**，已随源码包分发于 `tools/data/opencc/`，并锁定到上述不可变 commit（不用 `master`：master 会漂移，无法保证零差异重建）。`gen_cc.py` 读取时会逐个校验 SHA256。详见第 9 节。
 
 ---
 
@@ -260,7 +264,7 @@ https://github.com/cure53/DOMPurify/blob/3.2.6/dist/purify.min.js
 
 ---
 
-## 9. 源码包（**必需**）与一个待决问题
+## 9. 源码包（**必需**）—— 已按方案 B 完成
 
 ### 为什么必须提交源码
 
@@ -279,53 +283,47 @@ https://github.com/cure53/DOMPurify/blob/3.2.6/dist/purify.min.js
 | `icons/icon{16,48,128}.png` | `tools/gen_icons.py` | 自有代码 |
 | 包内 `manifest.json`（Firefox 变体） | `tools/package.py` 改写 `background` 字段 | 自有代码 |
 
-官方对构建说明的要求：**reviewer 会照说明重建，然后 diff，必须零差异**；所用工具必须开源、**不能是在线的（web-based）**，须在本地可跑；建议附 README 说明系统/环境要求与完整命令。
+官方对构建说明的要求：**reviewer 会照说明重建，然后 diff，必须零差异**；所用工具必须开源、**不能是在线的（web-based）**，须在本地可跑。
+
+### 提交物
+
+| 文件 | 内容 |
+|---|---|
+| `dist/novel-yuedu-v0.2.15-source.zip` | 37 个文件，676 KB —— 直接上传这一份即可 |
+| `BUILD.md` | 构建说明（已含在源码包内，仓库根目录也有一份） |
+
+源码包内含：完整 `src/`、`rules/`、`icons/`、`manifest.json`、构建器 `tools/{gen_cc,gen_icons,package}.py`、**锁定的 OpenCC 词典** `tools/data/opencc/*.txt`、`BUILD.md`、`THIRD-PARTY-NOTICES`。
+
+### 采用的修法：方案 B（锁定 commit + 词典随包分发，行为不变）
+
+原先的问题：`gen_cc.py` 从 `raw.githubusercontent.com/BYVoid/OpenCC/**master**/` 下载词典，仓库内不存这些输入。实测（`chinese-convert.js` sha256 `539533a5…`）：
+
+- 用 OpenCC `master` 词典重跑 → **完全一致**（master 当时 HEAD = `c363a7ba51`, 2026-09-09）
+- 用发布 tag **ver.1.4.2 / 1.4.1 / 1.4.0 / 1.3.2 / 1.3.1 / 1.3.0** 重跑 → **全部不一致**
+
+即：线上字表来自 **`master` 快照**，而 master 会漂移、且不符合 AMO「第三方须用发布版本」的要求，reviewer 无法保证零差异重建。
+
+**已实施的修复**：
+
+- `tools/gen_cc.py` 数据源固定为不可变 commit **`c363a7ba51d487950982bd8a589211ffbfd95ba1`**（2026-09-09），不再用 `master`
+- 四份词典（约 1.1 MB，Apache-2.0）随仓库分发于 `tools/data/opencc/`，构建时**离线读取**
+- `gen_cc.py` 读取时**逐个校验 SHA256**，不符即报错退出（实测篡改词典会以退出码 1 终止），杜绝静默产出不同字表
+- 因此 `chinese-convert.js` 与改动前**逐字节相同**（sha256 仍为 `539533a5a1265677c4b6f34b2c1f10f90b8218fd8c656fac90c314f929b61f80`），**功能零变化**，无需重测转换断言
+
+> 该词典数据属"作为生成器输入分发的第三方数据"，来源为固定 commit（不可变），并随源码包一并提交，因此 reviewer 无需联网即可复现。已在 "Notes for Reviewers" 中说明（见第 5 节末尾）。
 
 ### 已验证的复现情况
 
 | 产物 | 结论 |
 |---|---|
-| `icons/*.png` | ✅ `gen_icons.py` 纯本地、无网络，重建**逐字节一致** |
+| `chinese-convert.js` | ✅ 用随包词典**离线重建，逐字节一致** |
+| `icons/*.png` | ✅ `gen_icons.py` 纯本地无网络，逐字节一致 |
 | `Readability*.js`、`purify.min.js` | ✅ 官方发布版原文件，checksum 一致 |
-| `manifest.json` 变体 | ✅ `tools/package.py` 可复现（连续打包字节一致） |
-| **`chinese-convert.js`** | ❌ **不可从任何 OpenCC 发布 tag 复现** |
+| **`dist/novel-yuedu-v0.2.15.xpi`** | ✅ **完整重建后逐字节一致**（sha256 `abb5ab205615cb331893140ee80f42dc9c777af31d9db505a5665f9e7b60dfd8`） |
 
-实测数据（`chinese-convert.js` 线上 sha256 = `539533a5a1265677c4b6f34b2c1f10f90b8218fd8c656fac90c314f929b61f80`）：
+打包脚本原本会因 zip 记录文件 mtime 而"改变容器字节"（同内容不同校验和），现已把 zip 条目时间戳固定为 `1980-01-01`，**重跑生成器后再打包，产物字节仍恒定**。另提供 `--no-crx` 开关：reviewer 没有本项目发布私钥，AMO 审查只需 zip/xpi，无需 CRX 签名。
 
-- 用 **OpenCC `master`** 词典重跑 `gen_cc.py` → **完全一致 ✅**（master 当时 HEAD = commit `c363a7ba51`，2026-09-09）
-- 用发布 tag **ver.1.4.2 / 1.4.1 / 1.4.0 / 1.3.2 / 1.3.1 / 1.3.0** 重跑 → **全部不一致 ❌**
-
-问题在于：`gen_cc.py` 目前从 `https://raw.githubusercontent.com/BYVoid/OpenCC/**master**/data/dictionary/` 下载词典（仓库内不存这些输入）。而 AMO 规定第三方库"**non-release versions are not accepted**"，且要求构建能在本地离线复现。**以现状提交，源码审查这一关会卡住。**
-
-### 两个修法（需发布者决定）
-
-**方案 A — 改用发布 tag 重新生成（策略最干净，但字表会变）**
-
-- 把 `gen_cc.py` 的数据源从 `master` 改为最近的发布 tag（如 `ver.1.4.2`），重新生成 `chinese-convert.js`
-- 优点：生成来源是正式发布版，完全符合"必须用 release tag"的规则
-- 代价：字表内容与现在**不同**（master 上有 1.4.2 之后新增的映射），简繁转换行为会有细微变化 → **必须重跑简繁转换相关测试**（`test-core` 的 `ccConvert` 断言、`e2e-catalog` 的简繁目录断言），并 bump 版本、重新打包发布
-
-**方案 B — 锁定到 commit SHA + 把词典随源码包一起提交（行为完全不变）**
-
-- 把 `gen_cc.py` 的数据源固定为 master 当时的 commit `c363a7ba51`（不可变，不像 `master` 那样漂移），并把 4 个词典文件（合计约 **1.16 MB**，Apache-2.0）一并放进源码包，构建时**离线读取**
-- 优点：`chinese-convert.js` **逐字节不变**，无需改动功能、无需重跑转换断言；reviewer 无需联网即可零差异重建
-- 代价：生成输入是 commit SHA 而非发布 tag；需在 "Notes for Reviewers" 里说明这份数据来自 `c363a7ba51`（不可变快照），并附 OpenCC 仓库链接
-
-> 两方案都需要 **bump 版本并重新打包发布**（因为要么改了生成脚本、要么改了源码包约定），并制作源码包 zip。
-
-### 源码包建议内容
-
-```
-tools/gen_cc.py            # 字表生成器
-tools/gen_icons.py         # 图标生成器
-tools/package.py           # 打包（含 Firefox manifest 改写、CRX3 签名）
-tools/data/*.txt           # 方案 B：锁定的 OpenCC 词典（约 1.16 MB）
-BUILD.md                   # 构建说明：系统要求、完整命令、预期 checksum
-```
-
-`BUILD.md` 需写清：Python 3 版本要求、`openssl` 依赖（CRX 签名，仅 Chrome 侧载需要，AMO 审查可跳过）、以及从源码到 `dist/novel-yuedu-v<版本>.xpi` 的每一步命令，并给出各生成产物的 sha256 以便 reviewer 核对零差异。
-
-`tools/gen_fixtures.py` 生成的是**测试用**站点，不进扩展包，无需放入源码包。
+`tools/gen_fixtures.py` 生成的是**测试用**站点，不进扩展包，故未放入源码包。
 
 ---
 

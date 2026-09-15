@@ -5,18 +5,39 @@
   STCharacters.txt / TSCharacters.txt  —— 单字映射（每行多候选取第一个）
   STPhrases.txt / TSPhrases.txt        —— 词组映射
 
+词典**锁定到 OpenCC 的固定 commit**，不用 master：
+  - master 会漂移，同一份源码不同时间重建会得到不同字表；
+  - AMO 明确不接受第三方库的非发布版本（"non-release versions are not accepted"），
+    且要求 reviewer 能在本地离线零差异重建。
+锁定 commit c363a7ba51d487950982bd8a589211ffbfd95ba1（2026-09-09）。
+
+词典随仓库分发在 tools/data/opencc/（约 1.1 MB），构建时**离线读取**；仅在缺失时才按
+上述 commit 下载，并对每个文件校验 SHA256 —— 校验不过即报错退出，绝不静默产出别的字表。
+
 词组表只保留"逐字转换结果 ≠ OpenCC 词组转换结果"的条目（字表能转对的词不冗余存储），
 典型如 头发→頭髮（逐字会得 頭發）、后面→後面（逐字会得 后面不变/後取错）。
-用法：python3 tools/gen_cc.py [OpenCC data/dictionary 目录]（默认 /tmp/opencc，缺文件时自动下载）
+
+用法：python3 tools/gen_cc.py [词典目录]（默认 tools/data/opencc）
 """
+import hashlib
 import sys
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / 'src' / 'lib' / 'chinese-convert.js'
-BASE = 'https://raw.githubusercontent.com/BYVoid/OpenCC/master/data/dictionary/'
+DEFAULT_DATA_DIR = ROOT / 'tools' / 'data' / 'opencc'
+
+# 锁定的 OpenCC commit 与其词典文件校验值（换 commit 必须同步更新）
+OPENCC_COMMIT = 'c363a7ba51d487950982bd8a589211ffbfd95ba1'
+BASE = f'https://raw.githubusercontent.com/BYVoid/OpenCC/{OPENCC_COMMIT}/data/dictionary/'
 FILES = ['STCharacters.txt', 'TSCharacters.txt', 'STPhrases.txt', 'TSPhrases.txt']
+EXPECTED_SHA256 = {
+    'STCharacters.txt': 'a0ca1601c70648cf48b33c3c6210ccbecc5c7eead4b4c3daf76587ba2c03582b',
+    'TSCharacters.txt': '737c21c66f55a419dd6956cb3089476cdefc5a36877452631617696df1e5d925',
+    'STPhrases.txt': 'f6eab5e5c6dd7640597878d3dfc6599ee1279d2bc91561eadd8e114194e2925a',
+    'TSPhrases.txt': '35c1eb677b02b0e846b4004199e26c433e969c264e765952c410d1f73b837ef6',
+}
 
 MAX_PHRASE_LEN = 8  # 超过 8 字的词组多为书名/专名，消歧收益低，舍去控体积
 
@@ -32,14 +53,25 @@ def fix_variant(s):
 
 
 def load(data_dir: Path):
+    """读取锁定版本的四份 OpenCC 词典；缺失则按锁定 commit 下载，然后逐个校验 SHA256。"""
     data_dir.mkdir(parents=True, exist_ok=True)
     texts = {}
     for f in FILES:
         p = data_dir / f
         if not p.exists():
-            print(f'下载 {f} …')
+            print(f'词典缺失，按锁定 commit {OPENCC_COMMIT[:10]} 下载 {f} …')
             urllib.request.urlretrieve(BASE + f, p)
-        texts[f] = p.read_text(encoding='utf-8')
+        raw = p.read_bytes()
+        got = hashlib.sha256(raw).hexdigest()
+        want = EXPECTED_SHA256[f]
+        if got != want:
+            raise SystemExit(
+                f'错误：{p} 校验不符，拒绝生成。\n'
+                f'  期望 sha256 {want}\n  实际 sha256 {got}\n'
+                f'  该文件应取自 OpenCC commit {OPENCC_COMMIT}；'
+                f'内容不符会导致字表与已发布版本不一致。'
+            )
+        texts[f] = raw.decode('utf-8')
     return texts
 
 
@@ -96,7 +128,7 @@ def pack_phrases(m):
 
 
 def main():
-    data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('/tmp/opencc')
+    data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_DATA_DIR
     texts = load(data_dir)
 
     s2t_chars = parse_char_table(texts['STCharacters.txt'])
