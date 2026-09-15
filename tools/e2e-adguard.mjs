@@ -19,98 +19,13 @@
  *
  * 运行：python3 -m http.server -d test/fixtures 8080 & 然后 node tools/e2e-adguard.mjs <项目根目录>
  */
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { BASE, sleep, check, fail, summary, CDP, launchChrome, evalJs, until, pageTargets } from './harness.mjs';
 
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
 const PORT = 9341;
 const PROFILE = '/tmp/nr-adguard-profile';
-const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
 const OTHER = BASE.replace('127.0.0.1', 'localhost'); // 同一 fixture 服务器、不同域名 → DNR 视为外站
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let passed = 0;
-let failed = 0;
-function check(name, cond, extra) {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra && !cond ? '  → ' + extra : ''));
-  cond ? passed++ : failed++;
-}
-
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve: res, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : res(msg.result);
-      } else {
-        this.events.push(msg);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res);
-      ws.addEventListener('error', rej);
-    });
-    return new CDP(ws);
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((res, rej) => this.pending.set(id, { resolve: res, reject: rej }));
-  }
-  isolatedContextId() {
-    let found = null;
-    for (const e of this.events) {
-      if (e.method === 'Runtime.executionContextCreated') {
-        const c = e.params.context;
-        if (c.name && c.name.indexOf('小说悦读') >= 0) found = c.id;
-      }
-    }
-    return found;
-  }
-}
-
-async function evalJs(cdp, expression, contextId) {
-  const params = { expression, returnByValue: true, awaitPromise: true };
-  if (contextId != null) params.contextId = contextId;
-  const r = await cdp.send('Runtime.evaluate', params);
-  if (r.exceptionDetails) throw new Error(expression.slice(0, 80) + ' => ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
-}
-
-async function until(cdp, expression, timeout = 10000, interval = 150) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    if (await evalJs(cdp, expression)) return true;
-    if (Date.now() > deadline) throw new Error('timeout: ' + expression.slice(0, 80));
-    await sleep(interval);
-  }
-}
-
-async function pageTargets() {
-  const list = await fetch(`http://127.0.0.1:${PORT}/json/list`).then((r) => r.json());
-  return list.filter((t) => t.type === 'page').length;
-}
-
-rmSync(PROFILE, { recursive: true, force: true });
-const proc = spawn(CHROME, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`, 'about:blank'
-], { stdio: 'ignore' });
+const proc = launchChrome({ port: PORT, profile: PROFILE });
 const watchdog = setTimeout(() => { console.error('⏱ 超时退出'); try { proc.kill('SIGKILL'); } catch (e) {} process.exit(2); }, 240000);
 
 try {
@@ -138,8 +53,8 @@ try {
   // ---- 1. DNR 白名单：跨域拦、本站放 ----
   const fetchProbe = (url, mode) =>
     `fetch(${JSON.stringify(url)}, {mode: ${JSON.stringify(mode)}}).then(() => 'ok', (e) => 'err:' + (e && e.message))`;
-  check('阅读中：跨域 fetch 被 DNR 拦下', (await evalJs(cdp, fetchProbe(`${OTHER}/longsite/2.html`, 'no-cors'))).indexOf('err') === 0,
-    await evalJs(cdp, fetchProbe(`${OTHER}/longsite/2.html`, 'no-cors')));
+  const crossFetch = await evalJs(cdp, fetchProbe(`${OTHER}/longsite/2.html`, 'no-cors'));
+  check('阅读中：跨域 fetch 被 DNR 拦下', crossFetch.indexOf('err') === 0, crossFetch);
   check('阅读中：本站 fetch 放行（阅读器章节加载不受影响）', (await evalJs(cdp, fetchProbe(`${BASE}/longsite/2.html`, 'cors'))) === 'ok');
 
   const scriptProbe = (origin) => `new Promise((resolve) => {
@@ -172,14 +87,27 @@ try {
   check('阅读中：动态 meta refresh 被移除', await evalJs(cdp, `!document.querySelector('meta[http-equiv]') || !/^refresh$/i.test(document.querySelector('meta[http-equiv]').getAttribute('http-equiv') || '')`));
   check('阅读中：未发生 meta refresh 跳转', await evalJs(cdp, `location.origin`) === BASE);
 
+  // ---- 2.5 会话白名单跟随设置热更新（跨设备 storage.sync → reloadSettings → _applySettings） ----
+  // 回归锁定：修复前 DNR 同步只挂在 onSettingChanged（仅面板路径），热更新路径不下发规则变更
+  const setSetting = (patch) =>
+    `new Promise((res)=>chrome.storage.sync.set({settings: Object.assign({}, NR.settings, ${JSON.stringify(patch)})}, res))`;
+  await evalJs(cdp, setSetting({ blockAdsOnRead: false }), ctx);
+  await sleep(1200);
+  const afterOff = await evalJs(cdp, fetchProbe(`${OTHER}/longsite/2.html`, 'no-cors'));
+  check('热更新关闭 blockAdsOnRead 后阅读中跨域请求放行', afterOff === 'ok', afterOff);
+  await evalJs(cdp, setSetting({ blockAdsOnRead: true }), ctx);
+  await sleep(1200);
+  const afterOn = await evalJs(cdp, fetchProbe(`${OTHER}/longsite/2.html`, 'no-cors'));
+  check('热更新恢复 blockAdsOnRead 后重新拦截', afterOn.indexOf('err') === 0, afterOn);
+
   // ---- 3. window.open 包装（配真实用户激活，排除弹窗拦截器的假阳性） ----
-  const before = await pageTargets();
+  const before = await pageTargets(PORT);
   await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 500, y: 450, button: 'left', clickCount: 1 });
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 500, y: 450, button: 'left', clickCount: 1 });
   const opened = await evalJs(cdp, `window.open(${JSON.stringify(OTHER + '/longsite/1.html')}) ? 'opened' : 'null'`);
   await sleep(600);
   check('阅读中：带用户激活的 window.open 返回 null', opened === 'null', opened);
-  check('阅读中：无新标签页产生', (await pageTargets()) === before);
+  check('阅读中：无新标签页产生', (await pageTargets(PORT)) === before);
 
   // ---- 4. 退出阅读：规则与守卫同步放行 ----
   await evalJs(cdp, `NR.reader.close()`, ctx);
@@ -192,10 +120,9 @@ try {
   cdp.ws.close();
 } catch (e) {
   console.error('✗ 异常终止：', e.message);
-  failed++;
+  fail();
 } finally {
-  console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
   clearTimeout(watchdog);
   try { proc.kill('SIGKILL'); } catch (e) {}
-  process.exit(failed ? 1 : 0);
+  process.exit(summary() ? 1 : 0);
 }

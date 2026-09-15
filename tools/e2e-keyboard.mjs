@@ -16,99 +16,11 @@
  *
  * 运行：python3 -m http.server -d test/fixtures 8080 & 然后 node tools/e2e-keyboard.mjs <项目根目录>
  */
-import { spawn } from 'node:child_process';
 import { rmSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
-const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let passed = 0;
-let failed = 0;
-function check(name, cond, extra) {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra && !cond ? '  → ' + extra : ''));
-  cond ? passed++ : failed++;
-}
-
-// ---------------- CDP 客户端（与 e2e-catalog.mjs 同构） ----------------
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve: res, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : res(msg.result);
-      } else {
-        this.events.push(msg);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res);
-      ws.addEventListener('error', rej);
-    });
-    return new CDP(ws);
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    this.ws.send(JSON.stringify(msg));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  isolatedContextId() {
-    let found = null;
-    for (const e of this.events) {
-      if (e.method === 'Runtime.executionContextCreated') {
-        const c = e.params.context;
-        if (c.name && c.name.indexOf('小说悦读') >= 0) found = c.id;
-      }
-    }
-    return found;
-  }
-}
-
-async function evalJs(cdp, expression, contextId) {
-  const params = { expression, returnByValue: true, awaitPromise: true };
-  if (contextId != null) params.contextId = contextId;
-  const r = await cdp.send('Runtime.evaluate', params);
-  if (r.exceptionDetails) throw new Error(expression.slice(0, 80) + ' => ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
-}
-
-async function until(cdp, expression, timeout = 10000, interval = 150, contextId) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    if (await evalJs(cdp, expression, contextId)) return true;
-    if (Date.now() > deadline) throw new Error('timeout: ' + expression.slice(0, 80));
-    await sleep(interval);
-  }
-}
+import { BASE, EXT, sleep, check, fail, summary, CDP, launchChrome, evalJs, until } from './harness.mjs';
 
 const procs = [];
-function launchChrome(port, profile, windowSize) {
-  rmSync(profile, { recursive: true, force: true });
-  const proc = spawn(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    `--user-data-dir=${profile}`,
-    `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-    `--window-size=${windowSize}`,
-    `--remote-debugging-port=${port}`, 'about:blank'
-  ], { stdio: 'ignore' });
-  procs.push(proc);
-  return proc;
-}
 const watchdog = setTimeout(() => {
   console.error('⏱ 超时退出');
   for (const p of procs) { try { p.kill('SIGKILL'); } catch (e) { /* 已退出 */ } }
@@ -143,7 +55,7 @@ function staticChecks() {
 // ---------------- 场景：站点键盘脚本隔离 + 自身快捷键 ----------------
 async function runKeyboard() {
   console.log('\n[桌面 1000×900] 键盘事件隔离（站点 ←/→ 翻章脚本）');
-  launchChrome(9344, '/tmp/nr-kbd-profile', '1000,900');
+  procs.push(launchChrome({ port: 9344, profile: '/tmp/nr-kbd-profile', windowSize: '1000,900' }));
   const cdp = await openTab(9344, `${BASE}/longsite/8.html`);
   const SR = `document.getElementById('novel-reader-host').shadowRoot`;
   const js = (expr) => evalJs(cdp, expr);
@@ -191,7 +103,7 @@ async function runKeyboard() {
     await sleep(500); // _scrollToChapter 的 rAF 推进 currentIndex
     const siteKeys1 = await js('window.__siteKeys.join(",")'); // 主世界读取：站点脚本真正看到的按键
     const afterNext = await st(`({ idx: NR.reader.state.currentIndex,
-      url: (NR.reader.state.chapters[NR.reader.state.currentIndex].data.url || ''),
+      url: (NR.reader.state.chapters[NR.reader.state.currentIndex].meta.url || ''),
       host: !!document.getElementById('novel-reader-host') })`);
     check('→ 翻到第 9 章（拼接）', afterNext.idx === 1 && /9\.html$/.test(afterNext.url), JSON.stringify(afterNext));
     check('→ 后阅读视图仍在（未退出）', afterNext.host);
@@ -247,7 +159,7 @@ staticChecks();
 try {
   await runKeyboard();
 } catch (e) {
-  failed++;
+  fail();
   console.error('  ✗ 测试执行异常：', e.message);
 }
 
@@ -255,5 +167,4 @@ clearTimeout(watchdog);
 for (const p of procs) { try { p.kill('SIGKILL'); } catch (e) { /* 已退出 */ } }
 await sleep(500);
 try { rmSync('/tmp/nr-kbd-profile', { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
-console.log(`\n结果：${passed} 通过，${failed} 失败`);
-process.exit(failed ? 1 : 0);
+process.exit(summary() ? 1 : 0);

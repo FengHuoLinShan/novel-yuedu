@@ -4,57 +4,13 @@
  * 覆盖：内容脚本（隔离世界）、扩展 service worker、popup 页、chrome://extensions 内部状态。
  * 运行：node tools/e2e-errors.mjs <扩展目录> [真实URL]
  */
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { BASE, sleep, CDP, launchChrome, evalJs } from './harness.mjs';
 
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
 const REAL_URL = process.argv[3] || '';
 const PORT = 9344;
 const PROFILE = '/tmp/nr-errors-profile';
-const BASE = 'http://127.0.0.1:8080';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const issues = []; // {source, level, text}
 const addIssue = (source, level, text) => issues.push({ source, level, text: String(text).slice(0, 400) });
-
-class CDP {
-  constructor(ws, label) {
-    this.ws = ws;
-    this.label = label;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result);
-      } else {
-        this.events.push(m);
-      }
-    });
-  }
-  static async connect(url, label) {
-    const ws = new WebSocket(url);
-    await Promise.race([
-      new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', () => rej(new Error('ws error'))); }),
-      sleep(5000).then(() => Promise.reject(new Error('ws timeout')))
-    ]);
-    return new CDP(ws, label);
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    this.ws.send(JSON.stringify(msg));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-}
 
 /** 给某个 session 挂错误收集（页面世界 + 隔离世界都会以 executionContext 出现） */
 function watchRuntime(cdp, sessionId, label) {
@@ -71,19 +27,7 @@ function watchRuntime(cdp, sessionId, label) {
   });
 }
 
-const evalJs = async (cdp, expression) => {
-  const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails).slice(0, 300));
-  return r.result.value;
-};
-
-rmSync(PROFILE, { recursive: true, force: true });
-const proc = spawn(CHROME, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`, 'about:blank'
-], { stdio: 'ignore' });
+const proc = launchChrome({ port: PORT, profile: PROFILE });
 const watchdog = setTimeout(() => { console.error('⏱ 超时退出'); try { proc.kill('SIGKILL'); } catch (e) {} process.exit(2); }, REAL_URL ? 420000 : 120000);
 
 async function openTab(url) {

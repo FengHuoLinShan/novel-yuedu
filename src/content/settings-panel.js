@@ -1,119 +1,11 @@
 /**
- * settings-panel.js — 排版设置模型与面板 UI
- * 设置存 chrome.storage.sync（跨设备同步），改动即时生效；持久化做尾缘
- * debounce（滑杆拖动的高频 input 只落一次最终值，避开 sync 写限额）。
+ * settings-panel.js — 排版设置面板 UI
+ * 设置模型与持久化在 settings.js（NR.settings / NR.saveSettings / NR.subscribeSettings）；
+ * 本模块只负责构建面板控件并把改动交给模型，不触碰阅读视图。
  */
 (function () {
   'use strict';
   const NR = (globalThis.NR = globalThis.NR || {});
-
-  NR.DEFAULT_SETTINGS = {
-    fontSize: 19,        // px
-    lineHeight: 1.9,     // 倍
-    fontFamily: 'system',
-    theme: 'light',      // light | dark | sepia
-    widthPercent: 75,      // 正文宽度占视口百分比；100% 即当前设备全屏，横竖屏切换由 CSS 自动适配
-    fullWidth: false,      // 全屏宽度快捷开关：正文铺满屏幕，仅保留少量边距
-    indent: true,        // 首行缩进两字
-    noImages: true,      // 屏蔽正文图片
-    preload: true,       // 预加载下一章
-    autoAppend: true,    // 滚动到底自动拼接下一章
-    clickPaging: true,   // 点击屏幕上/下三分之一区域翻页
-    floatingButton: true, // 显示悬浮按钮
-    blockAdsOnRead: true  // 阅读时启用白名单式拦截：仅放行本站域名的请求（会话级 DNR 规则）
-  };
-
-  NR.FONT_STACKS = {
-    system: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif',
-    song: 'Georgia, "Songti SC", SimSun, "NSimSun", "Songti", serif',
-    hei: '"PingFang SC", "Heiti SC", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif',
-    kai: '"Kaiti SC", KaiTi, STKaiti, "STSong", "WenQuanYi Micro Hei Light", serif'
-  };
-
-  NR.THEMES = {
-    light: { bg: '#f7f7f4', fg: '#2c2c2c', muted: '#8a8a85', line: '#e4e4de', accent: '#4f46e5', panel: '#ffffff' },
-    dark: { bg: '#16161a', fg: '#c9c9cf', muted: '#7c7c85', line: '#2c2a32', accent: '#8b87f7', panel: '#1e1e24' },
-    sepia: { bg: '#f5ecd9', fg: '#584634', muted: '#a08c72', line: '#e6d9bf', accent: '#8a6d3b', panel: '#faf3e3' }
-  };
-
-  NR.settings = Object.assign({}, NR.DEFAULT_SETTINGS);
-
-  NR.getSettings = async function () {
-    try {
-      const store = await chrome.storage.sync.get('settings');
-      const stored = store.settings || {};
-      NR.settings = Object.assign({}, NR.DEFAULT_SETTINGS, stored);
-      // 旧版 em 宽度迁移为百分比：按当前设备视口换算，保证观感不变
-      if (stored.widthPercent == null && stored.widthEm != null && typeof window !== 'undefined') {
-        const px = stored.widthEm * (stored.fontSize || NR.DEFAULT_SETTINGS.fontSize);
-        NR.settings.widthPercent = Math.min(100, Math.max(30, Math.round((px / Math.max(320, window.innerWidth)) * 100)));
-      }
-    } catch (e) {
-      NR.settings = Object.assign({}, NR.DEFAULT_SETTINGS);
-    }
-    return NR.settings;
-  };
-
-  let persistTimer = 0;
-  let syncFailNotified = false;
-
-  /**
-   * 更新设置：页面立即生效，持久化走尾缘 debounce。
-   * 滑杆每个 input 事件都会调用本函数（连续拖动高频），直接写 storage.sync 会撞
-   * 每分钟 120 次 / 每小时 1800 次的写限额，被拒的值就丢了；收敛为停手后写一次。
-   */
-  NR.saveSettings = function (patch) {
-    Object.assign(NR.settings, patch);
-    NR.applySettings();
-    NR.persistSettingsSoon();
-  };
-
-  NR.persistSettingsSoon = function () {
-    clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => NR.persistSettingsNow(), 400);
-  };
-
-  NR.persistSettingsNow = function () {
-    clearTimeout(persistTimer);
-    try {
-      if (!NR.extAlive()) return;
-      chrome.storage.sync.set({ settings: NR.settings }).catch((e) => {
-        // 持久化失败不能无声丢失（超限时本次修改不会跨设备保留）
-        console.warn('[novel-reader] 设置同步失败：', e && e.message);
-        if (!syncFailNotified) {
-          syncFailNotified = true;
-          NR.toast('设置同步失败，本次修改不会跨设备保留', 2600);
-        }
-      });
-    } catch (e) {
-      /* 扩展上下文失效时设置仍在本页生效，只是不再持久化 */
-    }
-  };
-
-  // 页面卸载前把 debounce 中的最后一次修改落盘，避免关页丢改动
-  window.addEventListener('pagehide', () => NR.persistSettingsNow());
-
-  /** 将当前设置应用到打开中的阅读视图（未打开则跳过） */
-  NR.applySettings = function () {
-    const reader = NR.reader;
-    if (!reader || !reader.isOpen || !reader.rootEl) return;
-    const s = NR.settings;
-    const theme = NR.THEMES[s.theme] || NR.THEMES.light;
-    const root = reader.rootEl;
-    root.dataset.theme = s.theme;
-    root.style.setProperty('--nr-fs', s.fontSize + 'px');
-    root.style.setProperty('--nr-lh', String(s.lineHeight));
-    root.style.setProperty('--nr-ff', NR.FONT_STACKS[s.fontFamily] || NR.FONT_STACKS.system);
-    root.style.setProperty('--nr-width', s.fullWidth ? 'calc(100% - 48px)' : 'min(' + s.widthPercent + '%, calc(100% - 48px))');
-    root.style.setProperty('--nr-bg', theme.bg);
-    root.style.setProperty('--nr-fg', theme.fg);
-    root.style.setProperty('--nr-muted', theme.muted);
-    root.style.setProperty('--nr-line', theme.line);
-    root.style.setProperty('--nr-accent', theme.accent);
-    root.style.setProperty('--nr-panel', theme.panel);
-    root.classList.toggle('nr-indent', !!s.indent);
-    root.classList.toggle('nr-img-hidden', !!s.noImages);
-  };
 
   /**
    * 构建设置面板（阅读视图 Shadow DOM 内挂载）。
@@ -147,8 +39,9 @@
       input.addEventListener('input', () => onInput(parseFloat(input.value)));
       return input;
     };
-    const select = function (options, getVal, onChange) {
+    const select = function (key, options, getVal, onChange) {
       const sel = document.createElementNS(ns, 'select');
+      sel.dataset.key = key;
       for (const opt of options) {
         const o = document.createElementNS(ns, 'option');
         o.value = opt.value;
@@ -159,11 +52,12 @@
       sel.addEventListener('change', () => onChange(sel.value));
       return sel;
     };
-    const check = function (labelText, getVal, onChange) {
+    const check = function (key, labelText, getVal, onChange) {
       const wrap = document.createElementNS(ns, 'label');
       wrap.className = 'nr-check';
       const input = document.createElementNS(ns, 'input');
       input.type = 'checkbox';
+      input.dataset.key = key;
       input.checked = !!getVal();
       const span = document.createElementNS(ns, 'span');
       span.textContent = labelText;
@@ -203,6 +97,7 @@
       row(
         '字体',
         select(
+          'fontFamily',
           [
             { value: 'system', label: '默认' },
             { value: 'song', label: '宋体' },
@@ -219,6 +114,7 @@
       row(
         '主题',
         select(
+          'theme',
           [
             { value: 'light', label: '明亮' },
             { value: 'sepia', label: '羊皮纸' },
@@ -229,18 +125,60 @@
         )
       )
     );
+    // 简繁转换（离线字表，切换即时生效）
+    frag.appendChild(
+      row(
+        '简繁',
+        select(
+          'textConvert',
+          [
+            { value: 'none', label: '原文' },
+            { value: 't2s', label: '转为简体' },
+            { value: 's2t', label: '转为繁體' }
+          ],
+          () => s.textConvert,
+          (v) => setAndSave({ textConvert: v })
+        )
+      )
+    );
+
+    // 端侧翻译（仅 Chrome 138+ 等支持 Translator API 的环境显示，其余浏览器隐藏）
+    if (NR.translateSupported && NR.translateSupported()) {
+      frag.appendChild(
+        row(
+          '翻译',
+          select(
+            'translateMode',
+            [
+              { value: 'off', label: '关闭' },
+              { value: 'replace', label: '替换原文' },
+              { value: 'bilingual', label: '双语对照' }
+            ],
+            () => s.translateMode,
+            (v) => setAndSave({ translateMode: v })
+          )
+        )
+      );
+      frag.appendChild(
+        row('源语言', select('translateSource', NR.SOURCE_OPTIONS, () => s.translateSource, (v) => setAndSave({ translateSource: v })))
+      );
+      frag.appendChild(
+        row('目标语言', select('translateTarget', NR.LANG_OPTIONS, () => s.translateTarget, (v) => setAndSave({ translateTarget: v })))
+      );
+    }
 
     const divider = document.createElementNS(ns, 'div');
     divider.className = 'nr-divider';
     frag.appendChild(divider);
 
-    frag.appendChild(check('全屏宽度', () => s.fullWidth, (v) => setAndSave({ fullWidth: v })));
-    frag.appendChild(check('首行缩进', () => s.indent, (v) => setAndSave({ indent: v })));
-    frag.appendChild(check('屏蔽图片', () => s.noImages, (v) => setAndSave({ noImages: v })));
-    frag.appendChild(check('预加载下一章', () => s.preload, (v) => setAndSave({ preload: v })));
-    frag.appendChild(check('滚动到底自动拼接', () => s.autoAppend, (v) => setAndSave({ autoAppend: v })));
-    frag.appendChild(check('点击上下区域翻页', () => s.clickPaging, (v) => setAndSave({ clickPaging: v })));
-    frag.appendChild(check('阅读时只放行本站请求', () => s.blockAdsOnRead, (v) => setAndSave({ blockAdsOnRead: v })));
+    frag.appendChild(check('fullWidth', '全屏宽度', () => s.fullWidth, (v) => setAndSave({ fullWidth: v })));
+    frag.appendChild(check('indent', '首行缩进', () => s.indent, (v) => setAndSave({ indent: v })));
+    frag.appendChild(check('noImages', '屏蔽图片', () => s.noImages, (v) => setAndSave({ noImages: v })));
+    frag.appendChild(check('preload', '预加载下一章', () => s.preload, (v) => setAndSave({ preload: v })));
+    frag.appendChild(check('autoAppend', '滚动到底自动拼接', () => s.autoAppend, (v) => setAndSave({ autoAppend: v })));
+    frag.appendChild(check('clickPaging', '点击上下区域翻页', () => s.clickPaging, (v) => setAndSave({ clickPaging: v })));
+    frag.appendChild(check('blockAdsOnRead', '阅读时只放行本站请求', () => s.blockAdsOnRead, (v) => setAndSave({ blockAdsOnRead: v })));
+    frag.appendChild(check('navLock', '阅读时锁定页面（禁止跳转/弹窗）', () => s.navLock, (v) => setAndSave({ navLock: v })));
 
     const reset = document.createElementNS(ns, 'button');
     reset.className = 'nr-reset';
@@ -267,12 +205,10 @@
       for (const sel of el.querySelectorAll('select')) {
         sel.value = cur[sel.dataset.key || ''];
       }
-      const checks = el.querySelectorAll('input[type="checkbox"]');
-      // 顺序与构建时一致：fullWidth / indent / noImages / preload / autoAppend / clickPaging / blockAdsOnRead
-      const keys = ['fullWidth', 'indent', 'noImages', 'preload', 'autoAppend', 'clickPaging', 'blockAdsOnRead'];
-      checks.forEach((c, i) => {
-        if (keys[i]) c.checked = !!cur[keys[i]];
-      });
+      for (const c of el.querySelectorAll('input[type="checkbox"]')) {
+        // 按构建时写入的 data-key 同步（新增开关不必维护顺序表）
+        if (c.dataset.key) c.checked = !!cur[c.dataset.key];
+      }
       // 全屏宽度开启时，宽度百分比滑杆失效并置灰
       const widthRange = el.querySelector('input[type="range"][data-key="widthPercent"]');
       if (widthRange) widthRange.disabled = !!cur.fullWidth;
@@ -292,12 +228,10 @@
       }
     }
     syncVals();
+    // select 的 data-key 均在构建时写入，refresh 直接按 key 同步；
+    // 设置也可能被其他上下文改变（storage.sync 热更新、快捷键改字号）→ 订阅刷新
+    const unsubscribe = NR.subscribeSettings(refresh);
 
-    // select 的 data-key 同步
-    el.querySelectorAll('select').forEach((sel, i) => {
-      sel.dataset.key = i === 0 ? 'fontFamily' : 'theme';
-    });
-
-    return { el, refresh };
+    return { el, refresh, dispose: unsubscribe };
   };
 })();

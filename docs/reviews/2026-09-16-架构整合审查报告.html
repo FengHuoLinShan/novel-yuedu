@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小说悦读 · 架构整合审查报告（终版）</title>
+<style>
+  :root {
+    --bg: #f7f7f4; --fg: #24242a; --muted: #6f6f78; --line: #e2e2dc;
+    --card: #ffffff; --accent: #4f46e5; --ok: #17864a; --warn: #a35a00; --fix: #1d4ed8; --no: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px 80px; background: var(--bg); color: var(--fg);
+    font: 15px/1.75 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .2px; }
+  h2 { font-size: 19px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); font-weight: 600; }
+  p, li { margin: 8px 0; }
+  .sub { color: var(--muted); font-size: 13.5px; }
+  .verdict { display: inline-block; margin: 14px 0 4px; padding: 6px 14px; border-radius: 999px; background: #e8f6ee; color: var(--ok); font-weight: 600; font-size: 14px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f0ea; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { background: #efeff3; border-radius: 4px; padding: 1px 5px; font-size: 12.5px;
+         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .t-fix { background: #e8edfd; color: var(--fix); }
+  .t-doc { background: #f1eefd; color: #6d28d9; }
+  .t-no  { background: #ececef; color: var(--no); }
+  .t-ok  { background: #e8f6ee; color: var(--ok); }
+  ul { padding-left: 22px; }
+  .red { color: #b91c1c; font-weight: 600; }
+  .green { color: var(--ok); font-weight: 600; }
+  .kv { color: var(--muted); }
+  footer { max-width: 980px; margin: 36px auto 0; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>小说悦读 · 架构整合审查报告（终版）</h1>
+  <p class="sub">基线 HEAD <code>22e24e7</code>（v0.2.12）→ 工作区改动；审查方式：5 路并行代码审查 + 9 套测试实测；本轮为审查结论的修复与复验。</p>
+  <div class="verdict">二审通过 · 修复后无阻断项 · 可无条件合并</div>
+
+  <h2>1. 审查对象与方法</h2>
+  <p>审查对象是「全部方向都做」的 8 项架构整合改动（C1–C8）及其配套文档，工作区另有已存在的 v0.2.13 功能批次（简繁转换 / 端侧翻译 / 导航锁定）。审查按四条线并行推进：</p>
+  <ul>
+    <li><b>行为等价性</b>：把新增模块与原实现逐行对照（章节窗口几何、进度迁移、意图消费、设置流）。</li>
+    <li><b>测试完整性</b>：逐文件核对断言数量与语义强度，专门检查「把测试改到通过」。</li>
+    <li><b>架构深度</b>：以深模块词汇判断接口是否收窄、行为是否真的被藏起。</li>
+    <li><b>文档与打包</b>：CONTEXT/ADR 一致性、删除残留引用、package.py 打包范围。</li>
+  </ul>
+  <p>审查给出 <b>有条件合并</b>：无回归性缺陷、无阻断项，但列出 6 项中等问题（M-1…M-6）与 13 项低风险项（L-1…L-13）。本报告记录这些问题的最终处置与复验结果。</p>
+
+  <h2>2. 环境说明（与代码无关）</h2>
+  <p>在受限沙箱内直跑 e2e 会出现 100% 的 <code>ws error</code>。根因已定位：文件沙箱拦截 Chrome 子进程的 seatbelt 初始化（<code>sandbox initialization failed: Operation not permitted</code>）→ 渲染进程崩溃 → <code>Inspector.targetCrashed</code> → CDP 连接断开。用注入 <code>--no-sandbox</code> 的包装脚本（经 <code>NR_TEST_BROWSER</code>）后 8 套 e2e 全绿；本次复验在无该限制的策略下直跑即可。该故障对改动前后的代码同样生效，不是回归——但 harness 把「环境故障」与「被测代码故障」都报成同一句话，已按 L-12 补充提示。</p>
+
+  <h2>3. 测试实测（修复前 → 修复后）</h2>
+  <table>
+    <thead><tr><th>套件</th><th>修复前</th><th>修复后</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>test-core.mjs</td><td class="num">57</td><td class="num">64</td><td>+4 跳转意图 TTL 边界、+3 设置模型（注入 sync 适配器）</td></tr>
+      <tr><td>e2e-test</td><td class="num">53</td><td class="num">53</td><td>目录简繁断言由恒真改为可失败（数量不变、强度提高）</td></tr>
+      <tr><td>e2e-trim</td><td class="num">66</td><td class="num">66</td><td>章节收起等高占位几何未受影响</td></tr>
+      <tr><td>e2e-lifecycle</td><td class="num">41</td><td class="num">41</td><td>生命周期 / 多标签页 / 写入节流</td></tr>
+      <tr><td>e2e-keyboard</td><td class="num">19</td><td class="num">19</td><td>改为读记录元数据（<code>.meta.url</code>）</td></tr>
+      <tr><td>e2e-adguard</td><td class="num">17</td><td class="num">19</td><td>+2 设置热更新时的会话白名单跟随（先红后绿）</td></tr>
+      <tr><td>e2e-catalog</td><td class="num">29</td><td class="num">29</td><td>目录定位 / 移动端触控热区</td></tr>
+      <tr><td>e2e-popup</td><td class="num">21</td><td class="num">21</td><td>popup 新增 storage.js 依赖后复验</td></tr>
+      <tr><td>e2e-errors</td><td colspan="2">未捕获到任何异常 / 错误 / 警告</td><td>页面与内容脚本零异常</td></tr>
+    </tbody>
+  </table>
+  <p class="kv">全部改动文件通过 <code>node --check</code>；<code>manifest.json</code> 合法（隔离世界脚本 18 个，含新增 storage.js）；<code>tools/package.py</code> 可解析。</p>
+
+  <h3>先红后绿的证据（新增断言确实在测东西）</h3>
+  <div class="panel">
+    <p><b>M-2（会话白名单跟随设置热更新）</b>——修复前运行 e2e-adguard：<span class="red">18 通过，1 失败</span>，失败项恰为 <code>热更新关闭 blockAdsOnRead 后阅读中跨域请求放行 → err:Failed to fetch</code>；修复后：<span class="green">19 通过，0 失败</span>。</p>
+    <p><b>M-3（目录标题简繁转换）</b>——旧断言依赖「第一章」这三个简繁同形字，简繁转换完全不生效也会通过，属恒真断言；新断言改用含简繁差异的「客棧」，而该转换确实存在（目录标题在渲染时经过简繁转换），故为可失败的真断言。</p>
+  </div>
+
+  <h2>4. 修复清单</h2>
+  <h3>M 组（建议合并前修）</h3>
+  <table>
+    <thead><tr><th>编号</th><th>问题</th><th>处置</th><th>验证</th></tr></thead>
+    <tbody>
+      <tr><td>M-1</td><td>跳转意图清理失败时语义降级：命中有效意图也不再自动进入阅读模式</td><td><span class="tag t-fix">已修</span> <code>intent.js</code> 清理改为 try/catch 包裹并保留 await（与旧版 remove().catch() 的降级语义对齐，同时不破坏测试确定性）</td><td>test-core intent 段全绿（含「消费后删除，不重复命中」）</td></tr>
+      <tr><td>M-2</td><td>会话白名单只在面板路径同步；跨设备 storage.sync 热更新改广告开关当前会话不生效</td><td><span class="tag t-fix">已修</span> 网络层防护开关并入阅读视图唯一的设置应用入口，按已应用值做差量下发；旧的设置回调改为委托该入口</td><td>e2e-adguard 19/0（先红 1 失败）</td></tr>
+      <tr><td>M-3</td><td>目录简繁断言恒真，该行为实际无测试覆盖</td><td><span class="tag t-fix">已修</span> 断言改用含简繁差异的标题</td><td>e2e-test 53/0</td></tr>
+      <tr><td>M-4</td><td>跳转意图 TTL 边界零覆盖（10 分钟过期与 legacy 过期两分支无断言）</td><td><span class="tag t-fix">已修</span> 补 4 条断言：超 TTL 不命中、超 TTL 被清理、TTL 内仍命中、旧版 pendingOpen 过期清理</td><td>test-core 64/0</td></tr>
+      <tr><td>M-5</td><td>工作区混入第二个功能批次，审查/提交边界不清</td><td><span class="tag t-no">不拆分</span> 见 §5：两批次在新增文件内部交织，拆分必须生产从未被测试的中间提交</td><td>提交信息分两段说明 + 显式排除未跟踪交接文档</td></tr>
+      <tr><td>M-6</td><td>章节回填回调的位置构成隐式几何约束，无注释锁定</td><td><span class="tag t-fix">已修</span> 在回调处注明「不得同步写 DOM：下方高度测量依赖插入后、回填内容前的状态」</td><td>e2e-trim 66/0（几何回归无变化）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>L 组（低风险 / 可选）</h3>
+  <table>
+    <thead><tr><th>编号</th><th>问题</th><th>处置</th></tr></thead>
+    <tbody>
+      <tr><td>L-1</td><td>回填判定收窄为「无正文数据」，依赖未声明的不变量</td><td><span class="tag t-doc">已补注释</span> 在判定处声明「数据仅在持有完整正文时非空」</td></tr>
+      <tr><td>L-2</td><td>章节加载失败提示可能在新会话误弹（判定用的是当前会话）</td><td><span class="tag t-fix">已修</span> 捕获发起请求时的会话对象再判定</td></tr>
+      <tr><td>L-3</td><td>键盘回归读取记录数据位，章节收起时会抛错</td><td><span class="tag t-fix">已修</span> 改读记录元数据</td></tr>
+      <tr><td>L-4</td><td>状态字面量注释过时；只读访问器缺说明</td><td><span class="tag t-doc">已补注释</span> 记录形态注释更新、访问器标注只读</td></tr>
+      <tr><td>L-5</td><td>章节窗口导出无调用方的死 API</td><td><span class="tag t-fix">已删</span> 全库确认零调用方</td></tr>
+      <tr><td>L-6</td><td>三个模块的存储适配器逐字重复，而设置模块没有注入缝（无法进单元测试）</td><td><span class="tag t-fix">已修</span> 新增共享存储适配器模块：三处重复消除，设置为 sync 域补上同一套注入缝并新增 3 条断言；manifest 与 popup 同步连线</td></tr>
+      <tr><td>L-7</td><td>popup 头注释残留已删除的「全局广告拦截」</td><td><span class="tag t-doc">已修</span></td></tr>
+      <tr><td>L-8</td><td>重复的注释行</td><td><span class="tag t-doc">已删</span></td></tr>
+      <tr><td>L-9</td><td>术语表混入实现细节；「黑名单」被列为 Avoid 却仍在代码/README 活跃；两项新能力无词条</td><td><span class="tag t-doc">已修</span> 去掉实现名、保留历史键名说明、新增「简繁转换」「端侧翻译」两条术语</td></tr>
+      <tr><td>L-10</td><td>四篇 ADR 的被否方案记录不足</td><td><span class="tag t-doc">已修</span> 0001 补「一次性迁移」「改键名」；0002 补「社区规则表」「合并开关」与权限保留说明；0003 补约束价值；0004 补预留字段背景</td></tr>
+      <tr><td>L-11</td><td>未消费的跳转意图没有定时清理，可能长期驻留</td><td><span class="tag t-no">仅记录</span> 行为与旧版一致，按「行为保持」原则不加清理器，在模块头与 ADR-0001 说明</td></tr>
+      <tr><td>L-12</td><td>harness 把环境故障与代码故障报成同一句 ws error</td><td><span class="tag t-fix">已修</span> 错误信息补「确认 Chrome 能在当前环境启动；渲染进程崩溃也会报此错」</td></tr>
+      <tr><td>L-13</td><td>页面内变量仍用「黑名单」命名，与领域术语不一致</td><td><span class="tag t-fix">已修</span> 窄改名（页面内变量与函数）；存储键与消息字段为冻结契约，不改</td></tr>
+    </tbody>
+  </table>
+  <p class="kv">与计划的一处偏差：设置模块的注入缝落在 <code>NR.settingsStore._setStorage(adapter)</code>，而不是计划里写的挂到设置对象上（<code>NR.settings._setSyncStorage</code>）。原因是 <code>NR.settings</code> 是会被载入与热更新整体替换的值对象，挂在其上的方法在第一次载入后就会消失。</p>
+
+  <h2>5. 未采纳项：为什么没有拆成两个提交</h2>
+  <p>审查建议把「架构整合」与「v0.2.13 功能批次」拆成两个提交。复核实为不可行，故改为<b>单个提交 + 分段提交信息</b>：</p>
+  <ul>
+    <li>功能批次的钩子已经长进本次新增模块内部：设置的文本偏好默认值、阅读视图对简繁转换的无条件调用、章节记录的翻译位、ADR-0004 对该字段的描述。</li>
+    <li>manifest 的脚本数组把两个批次写进了同一个差异块，无法按行干净切分。</li>
+    <li>阅读视图无条件调用简繁转换能力，任何「架构先行」的中间提交都会因为转换模块尚未入库而在运行时报错——拆分等价于生产一个从未被测试过的中间状态。</li>
+  </ul>
+  <p>落地方式：以显式路径暂存，提交信息分「架构整合（C1–C8）」与「v0.2.13 功能批次」两段并各自列出文件；上轮遗留的未跟踪交接文档与打包产物不进入提交。</p>
+
+  <h2>6. 逐候选的深度判断</h2>
+  <table>
+    <thead><tr><th>候选</th><th>判断</th><th>依据</th></tr></thead>
+    <tbody>
+      <tr><td>C1 进度</td><td><span class="tag t-ok">真变深</span></td><td>三个接口背后藏住迁移、目录归并、200 本淘汰、写入串行化；调用方不再需要知道键方案</td></tr>
+      <tr><td>C2 意图</td><td><span class="tag t-ok">真变深</span></td><td>两个接口藏住 TTL、顺带清扫、旧格式兼容、多标签页隔离；入口里的全量扫描逻辑整体消失</td></tr>
+      <tr><td>C3 防护收敛</td><td><span class="tag t-ok">减法而非模块</span></td><td>删除 800+ 行（域名表 / 规则文件 / 生成脚本），接口面缩小；会话白名单链路自洽</td></tr>
+      <tr><td>C4 测试基座</td><td><span class="tag t-ok">真变深</span></td><td>9 个套件经同一接缝复用，删掉约 9 份逐字复制；基座在 3 处比原复制版更严格</td></tr>
+      <tr><td>C5 章节窗口</td><td><span class="tag t-ok">部分达标</span></td><td>223 行高危几何被真正藏起（视图侧只剩接线与委托）；但接缝偏宽、本次已删掉其中一处死 API</td></tr>
+      <tr><td>C6 设置</td><td><span class="tag t-ok">基本达标</span></td><td>单向数据流成立、面板不再读视图内部；本次把网络层防护开关也并入同一应用入口，消除了双入口差异</td></tr>
+      <tr><td>C7 站点启停</td><td><span class="tag t-ok">浅而恰当</span></td><td>模块本身不深，但把三处散落的匹配与读写收进一个可注入测试的接缝，属正确收口</td></tr>
+      <tr><td>C8 清单派生</td><td><span class="tag t-ok">适配器式改进</span></td><td>把两份真相改成一份真相 + 一个适配器；本次新增模块同样自动进入派生清单</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. 已登记的债务（C13 兼容垫片）</h2>
+  <p>章节记录数组的别名与两个状态访问器让旧的泄漏接口继续存活：部分 e2e 仍直接写记录数组，而不是走章节窗口的公开接口。这是<b>有声明的设计取舍</b>（避免一次性重写 4 个 e2e 套件），但测试因此能构造模块自身永远不会产生的状态。已写入 ADR-0004 作为后续工作：把 e2e 改打到「追加 / 按需回填 / 命中当前章」这三个新接口上。</p>
+
+  <h2>8. 未验证事项</h2>
+  <ul>
+    <li>真实站点端到端（需外部 URL，未运行）。</li>
+    <li>CRX 打包签名（需私钥且会写入打包产物目录，仅做解析与打包范围静态核实）。</li>
+    <li>真机 / 手机浏览器 popup 行为（仅以设备模拟验证）。</li>
+    <li>Chrome 138+ 端侧翻译的真实翻译效果（属功能批次，本机测试浏览器版本与模型下载未验证）。</li>
+    <li>在旧基线检出上重跑对照（旧基线数字由前一轮提供；环境限制对前后同样生效，对照意义有限）。</li>
+  </ul>
+
+  <h2>9. 结论</h2>
+  <p>修复后，审查报告中的全部中等问题已有明确处置（5 项修复、1 项以理由驳回），低风险项 12 项落地、1 项按行为保持原则仅登记。行为保持性由 9 套测试（合计 312 条断言）复核：断言数只在预期处增加，无一项被削弱；两处此前恒真/无覆盖的测试已改为可失败的真断言，并以「先红后绿」留证。架构方向（C1–C8）的深度判断在修复后不变，其中 C5、C6 因本轮收尾略优。</p>
+  <p><b>二审（对本次提交的独立复核）</b>：逐条核对 M/L 清单的代码证据、复跑全量测试，并对修复代码本身做对抗式检查。结论为「可合并，无条件」——未发现需返工或附条件的事项；仅记录两处不值得改动的微瑕（跳转意图清理多一次存储往返、ADR 行尾空格一处，后者已在本次提交内清理）。</p>
+  <p><b>结论：具备合并条件（二审：无条件合并）。</b>建议的后续工作只有两条：把 e2e 打到章节窗口的公开接口、为设置模块的宽度迁移补断言。</p>
+</main>
+<footer>小说悦读 · 架构整合审查报告（终版）· 随同一次提交落地，报告本身不进入扩展包。</footer>
+</body>
+</html>

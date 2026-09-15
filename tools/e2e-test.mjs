@@ -5,96 +5,11 @@
  * 运行：node tools/e2e-test.mjs <项目根目录> [--headed]
  * 前置：python3 -m http.server -d test/fixtures 8080 已启动
  */
-import { spawn } from 'node:child_process';
-import { writeFileSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { BASE, sleep, check, fail, summary, CDP, waitForDevtools, launchChrome, evalJs, screenshot } from './harness.mjs';
 
-// Chrome for Testing（Playwright 缓存）支持 --load-extension；正式版 Chrome 137+ 已移除该开关
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
 const HEADED = process.argv.includes('--headed');
 const PORT = 9333;
 const PROFILE = '/tmp/nr-e2e-profile';
-const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-let passed = 0;
-let failed = 0;
-function check(name, cond, extra) {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra && !cond ? '  → ' + extra : ''));
-  cond ? passed++ : failed++;
-}
-
-// ---------------- CDP 客户端 ----------------
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
-      } else {
-        this.events.push(msg);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res);
-      ws.addEventListener('error', rej);
-    });
-    return new CDP(ws);
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    this.ws.send(JSON.stringify(msg));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  async waitEvent(method, timeout = 15000) {
-    const deadline = Date.now() + timeout;
-    for (;;) {
-      const idx = this.events.findIndex((e) => e.method === method);
-      if (idx >= 0) return this.events.splice(idx, 1)[0];
-      if (Date.now() > deadline) throw new Error('timeout waiting ' + method);
-      await sleep(100);
-    }
-  }
-  /** 最新一个扩展内容脚本隔离世界的 contextId（导航后内容脚本重建，取最新即可） */
-  isolatedContextId() {
-    let found = null;
-    for (const e of this.events) {
-      if (e.method === 'Runtime.executionContextCreated') {
-        const c = e.params.context;
-        if (c.name && c.name.indexOf('小说悦读') >= 0) found = c.id;
-      }
-    }
-    return found;
-  }
-}
-
-async function waitForDevtools() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/version`);
-      if (r.ok) return;
-    } catch (e) {
-      /* retry */
-    }
-    await sleep(200);
-  }
-  throw new Error('devtools 未启动');
-}
 
 async function openPage(url) {
   const res = await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(url)}`, {
@@ -114,37 +29,11 @@ async function openPage(url) {
   return cdp;
 }
 
-async function evalJs(cdp, expression, contextId) {
-  const params = { expression, returnByValue: true, awaitPromise: true };
-  if (contextId != null) params.contextId = contextId;
-  const r = await cdp.send('Runtime.evaluate', params);
-  if (r.exceptionDetails) throw new Error(expression.slice(0, 80) + ' => ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
-}
-
-async function screenshot(cdp, path) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  writeFileSync(path, Buffer.from(data, 'base64'));
-  console.log('  📸 ' + path);
-}
-
 // ---------------- 主流程 ----------------
-rmSync(PROFILE, { recursive: true, force: true });
-const args = [
-  '--disable-gpu',
-  '--no-first-run',
-  '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`,
-  `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`,
-  'about:blank'
-];
-if (!HEADED) args.unshift('--headless=new');
-const proc = spawn(CHROME, args, { stdio: 'ignore' });
+const proc = launchChrome({ port: PORT, profile: PROFILE, headed: HEADED });
 
 try {
-  await waitForDevtools();
+  await waitForDevtools(PORT);
   const targets = await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json());
   console.log('扩展加载：', targets.some((t) => t.type === 'service_worker' || t.url.startsWith('chrome-extension')) ? '✓ service worker 已注册' : '（无 service worker 目标，仅检查内容脚本）');
 
@@ -209,7 +98,44 @@ try {
     const panelOpen = await evalJs(cdp1, `document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-root').classList.contains('nr-panel-open')`);
     check('排版设置面板可打开', panelOpen);
     const boxCount = await evalJs(cdp1, `document.getElementById('novel-reader-host').shadowRoot.querySelectorAll('.nr-panel input[type="checkbox"]').length`);
-    check('设置面板含 7 个开关（含点击翻页）', boxCount === 7, String(boxCount));
+    check('设置面板含 8 个开关（含导航锁定）', boxCount === 8, String(boxCount));
+
+    // 简繁转换：切到繁体后正文就地转换，切回原文还原
+    const ccFirst = await evalJs(cdp1, `(async()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const first=()=>sr.querySelector('.nr-chapter .nr-p').textContent;const before=first();
+      const sel=sr.querySelector('.nr-panel select[data-key="textConvert"]');
+      sel.value='s2t';sel.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,500));
+      const trad=first();
+      sel.value='none';sel.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,500));
+      return JSON.stringify({before, trad, back:first()});})()`);
+    const cc = JSON.parse(ccFirst);
+    check('简繁转换即时生效（繁体）', cc.trad !== cc.before && cc.trad.includes('客棧'), cc.trad.slice(0, 24));
+    check('切回原文还原', cc.back === cc.before, cc.back.slice(0, 24));
+
+    // 目录条目的简繁转换
+    await evalJs(cdp1, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const sel=sr.querySelector('.nr-panel select[data-key="textConvert"]');sel.value='s2t';sel.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await sleep(300);
+    const catTrad = await evalJs(cdp1, `(async()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;sr.querySelector('[data-act="catalog"]').click();await new Promise(r=>setTimeout(r,600));const it=sr.querySelector('.nr-cat-item');return it?it.textContent:'';})()`);
+    check('目录标题同步转繁体', catTrad.includes('客棧'), catTrad);
+    await evalJs(cdp1, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;sr.querySelector('.nr-catalog-close').click();const sel=sr.querySelector('.nr-panel select[data-key="textConvert"]');sel.value='none';sel.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await sleep(300);
+
+    // 导航锁定：阅读中站点脚本的 location 跳转 / window.open / pushState 全部被拦
+    const navLock = await evalJs(cdp1, `(async()=>{
+      const openedWin = window.open('http://evil.example/ad'); // 主世界包装应返回 null
+      let threw = false;
+      try { history.pushState(null, '', '/evil-path'); } catch (e) { threw = true; }
+      const pathAfterPush = location.pathname;
+      let navOk = true;
+      try { location.href = '/gbksite/1.html'; } catch (e) {}
+      await new Promise(r=>setTimeout(r, 1200));
+      navOk = location.pathname.includes('utf8site'); // 仍在原页即拦截成功
+      const hostAlive = !!document.getElementById('novel-reader-host');
+      return JSON.stringify({ popupBlocked: openedWin === null, pathAfterPush, navOk, hostAlive, threw });
+    })()`);
+    const nl = JSON.parse(navLock);
+    check('window.open 弹窗被拦', nl.popupBlocked === true);
+    check('pushState 篡改地址栏被拦', nl.pathAfterPush.includes('utf8site'), nl.pathAfterPush);
+    check('location 整页跳转被拦（阅读器存活）', nl.navOk && nl.hostAlive, JSON.stringify(nl));
 
     // 宽度滑杆拖到 90%（百分比显示与实时生效）
     await evalJs(cdp1, `(()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const r=sr.querySelector('input[type="range"][data-key="widthPercent"]');r.value='90';r.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -347,6 +273,10 @@ try {
   check('阅读进度已记录（章节+标题+章内位置，按书独立 key）', !!rec && rec.chapterTitle === '第一章 雨夜客栈' && rec.chapterRatio > 0, progressRaw.slice(0, 160));
 
   // 2) pendingOpen → 跳转第三章后自动进入阅读模式
+  // 真实流程中 pendingOpen 跳转发生在阅读模式之外（popup 续读等）；阅读中页面脚本的
+  // location.assign 正是导航锁定要拦的行为，故先退出阅读模式再模拟这次导航
+  await evalJs(cdp4, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`);
+  await sleep(600);
   await evalJs(
     cdp4,
     `new Promise(res=>chrome.storage.local.set({pendingOpen:{url:'${BASE}/utf8site/3.html',ts:Date.now()}},res))`,
@@ -463,11 +393,10 @@ try {
   await sleep(500);
   await cdp5.ws.close();
 } catch (e) {
-  failed++;
+  fail();
   console.error('异常：', e.message);
 } finally {
   proc.kill('SIGKILL');
 }
 
-console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
-process.exit(failed ? 1 : 0);
+process.exit(summary() ? 1 : 0);

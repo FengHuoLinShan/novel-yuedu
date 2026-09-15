@@ -1,5 +1,5 @@
 /**
- * main.js — 内容脚本入口：悬浮按钮、消息处理、站点黑名单、设置热更新
+ * main.js — 内容脚本入口：悬浮按钮、消息处理、站点启停、设置热更新
  * 仅在顶层窗口运行；iframe 中不注入任何东西。
  */
 (function () {
@@ -9,8 +9,8 @@
   if (window.top !== window) return; // iframe 不处理
   if (!/^https?:$/.test(location.protocol)) return;
 
-  NR._blacklist = [];
-  NR._blacklisted = false;
+  NR._siteList = [];
+  NR._siteDisabled = false;
 
   let floatBtn = null;
 
@@ -35,17 +35,15 @@
     }
   }
 
-  // ---------------- 站点黑名单 ----------------
+  // ---------------- 站点启停 ----------------
 
-  async function refreshBlacklist() {
+  async function refreshSites() {
     try {
-      const store = await chrome.storage.local.get('blacklist');
-      NR._blacklist = Array.isArray(store.blacklist) ? store.blacklist : [];
+      NR._siteList = await NR.sites.load();
     } catch (e) {
-      NR._blacklist = [];
+      NR._siteList = [];
     }
-    const host = location.hostname;
-    NR._blacklisted = NR._blacklist.some((h) => host === h || host.endsWith('.' + h));
+    NR._siteDisabled = NR.sites.matchHost(location.hostname, NR._siteList);
   }
 
   // ---------------- 悬浮按钮 ----------------
@@ -87,7 +85,7 @@
     const want =
       NR.settings &&
       NR.settings.floatingButton &&
-      !NR._blacklisted &&
+      !NR._siteDisabled &&
       !(NR.reader && NR.reader.isOpen) &&
       NR.isNovelLike(document);
     if (want && !floatBtn && document.body) {
@@ -102,7 +100,7 @@
   // ---------------- 启动 ----------------
 
   async function boot() {
-    await Promise.all([NR.getSettings().catch(() => {}), refreshBlacklist()]);
+    await Promise.all([NR.getSettings().catch(() => {}), refreshSites()]);
     refreshToggleHint();
     NR.loadSiteRules().then(updateFloatButton).catch(() => {});
     updateFloatButton();
@@ -120,49 +118,15 @@
   }
 
   /**
-   * 快速跳转落地：目录跳转 / popup 续读 / 返回上一章写入 po:<目标URL> 标记后导航到本页，
-   * 内容脚本启动时只消费自己命中的条目 → 自动进入阅读模式（配合进度记录恢复到上次位置）。
-   * 每个目标 URL 一条独立 key：两个标签页同时跳不同章节互不覆盖、互不误删；
-   * 启动时顺带清理过期条目（10 分钟）与旧版单值 pendingOpen。
+   * 快速跳转落地：目录跳转 / popup 续读 / 返回上一章声明跳转意图后导航到本页，
+   * 内容脚本启动时消费自己命中的意图 → 自动进入阅读模式（配合进度记录恢复到上次位置）。
+   * 键方案、TTL、旧版 pendingOpen 兼容、多标签页隔离都在 NR.intent 内（见 ADR-0001）。
    */
   async function checkPendingOpen() {
     try {
-      const store = await chrome.storage.local.get(null);
-      const now = Date.now();
-      const TTL = 10 * 60 * 1000;
-      const here = location.href.split('#')[0];
-      const doomed = [];
-      let mine = null;
-      for (const k of Object.keys(store)) {
-        if (k === 'pendingOpen') {
-          // 旧版单值标记：按原语义消费/清理
-          const po = store[k];
-          if (!po || !po.url) {
-            doomed.push(k);
-            continue;
-          }
-          const samePage = po.url.split('#')[0] === here;
-          if (samePage || now - (po.ts || 0) > TTL) doomed.push(k);
-          if (samePage && now - (po.ts || 0) <= TTL) mine = po;
-        } else if (k.indexOf('po:') === 0) {
-          const po = store[k];
-          if (!po || !po.url) {
-            doomed.push(k);
-            continue;
-          }
-          if (now - (po.ts || 0) > TTL) {
-            doomed.push(k);
-            continue;
-          }
-          if (po.url.split('#')[0] === here) {
-            mine = po;
-            doomed.push(k); // 只删除自己命中的条目，别的标签页的标记不动
-          }
-        }
-      }
-      if (doomed.length) chrome.storage.local.remove(doomed).catch(() => {});
-      if (!mine) return;
-      NR._autoOpenIntent = mine.intent === 'resume' ? 'resume' : 'jump'; // 传给 reader.open 决定是否恢复位置/提示
+      const hit = await NR.intent.consume(location.href);
+      if (!hit) return;
+      NR._autoOpenIntent = hit.intent; // 传给 reader.open 决定是否恢复位置/提示
       await NR.reader.open();
     } catch (e) {
       /* 自动打开失败不影响正常使用 */
@@ -176,12 +140,10 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && changes.settings) {
-      NR.settings = Object.assign({}, NR.DEFAULT_SETTINGS, changes.settings.newValue || {});
-      NR.applySettings();
+      NR.reloadSettings(changes.settings.newValue);
       updateFloatButton();
     } else if (area === 'local' && changes.blacklist) {
-      NR._blacklist = Array.isArray(changes.blacklist.newValue) ? changes.blacklist.newValue : [];
-      refreshBlacklist().then(updateFloatButton);
+      refreshSites().then(updateFloatButton);
     }
   });
 
@@ -211,7 +173,7 @@
       sendResponse({
         host: location.hostname,
         novelLike: NR.isNovelLike(document),
-        blacklisted: NR._blacklisted
+        blacklisted: NR._siteDisabled
       });
       return false;
     }

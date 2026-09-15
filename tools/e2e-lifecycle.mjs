@@ -16,78 +16,11 @@
  *
  * 运行：python3 -m http.server -d test/fixtures 8080 & 然后 node tools/e2e-lifecycle.mjs <项目根目录>
  */
-import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { BASE, sleep, check, fail, summary, CDP, launchChrome, evalJs, swEval } from './harness.mjs';
 
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
 const PORT = 9341;
 const PROFILE = '/tmp/nr-lifecycle-profile';
-const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let passed = 0;
-let failed = 0;
-function check(name, cond, extra) {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra && !cond ? '  → ' + extra : ''));
-  cond ? passed++ : failed++;
-}
-
-// ---------------- CDP 客户端（与 e2e-test.mjs 同构） ----------------
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve: res, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : res(msg.result);
-      } else {
-        this.events.push(msg);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res);
-      ws.addEventListener('error', rej);
-    });
-    return new CDP(ws);
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    this.ws.send(JSON.stringify(msg));
-    return new Promise((res, rej) => this.pending.set(id, { resolve: res, reject: rej }));
-  }
-  isolatedContextId() {
-    let found = null;
-    for (const e of this.events) {
-      if (e.method === 'Runtime.executionContextCreated') {
-        const c = e.params.context;
-        if (c.name && c.name.indexOf('小说悦读') >= 0) found = c.id;
-      }
-    }
-    return found;
-  }
-}
-
-async function evalJs(cdp, expression, contextId) {
-  const params = { expression, returnByValue: true, awaitPromise: true };
-  if (contextId != null) params.contextId = contextId;
-  const r = await cdp.send('Runtime.evaluate', params);
-  if (r.exceptionDetails) throw new Error(expression.slice(0, 80) + ' => ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
-}
 
 async function openPage(url) {
   const res = await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' }).then((r) => r.json());
@@ -96,40 +29,9 @@ async function openPage(url) {
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
-  await cdp.waitEventCompat('Page.loadEventFired', 15000).catch(() => {});
+  await cdp.waitEvent('Page.loadEventFired', 15000).catch(() => {});
   await sleep(1500); // document_idle + boot
   return cdp;
-}
-// 轻量事件等待（避免整份基类复制）
-CDP.prototype.waitEventCompat = async function (method, timeout = 15000) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const idx = this.events.findIndex((e) => e.method === method);
-    if (idx >= 0) return this.events.splice(idx, 1)[0];
-    if (Date.now() > deadline) throw new Error('timeout waiting ' + method);
-    await sleep(100);
-  }
-};
-
-/** 在 service worker 上下文求值（用于检查 DNR 会话规则） */
-async function swEval(expression) {
-  const ver = await fetch(`http://127.0.0.1:${PORT}/json/version`).then((r) => r.json());
-  const bcdp = await CDP.connect(ver.webSocketDebuggerUrl);
-  try {
-    await bcdp.send('Target.setDiscoverTargets', { discover: true });
-    let swTargetId = null;
-    for (let i = 0; i < 50 && !swTargetId; i++) {
-      const ev = await bcdp.waitEventCompat('Target.targetCreated', 1000).catch(() => null);
-      if (ev && ev.params.targetInfo.type === 'service_worker') swTargetId = ev.params.targetInfo.targetId;
-    }
-    if (!swTargetId) throw new Error('未找到 service worker 目标');
-    const { sessionId } = await bcdp.send('Target.attachToTarget', { targetId: swTargetId, flatten: true });
-    const r = await bcdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
-    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-    return r.result.value;
-  } finally {
-    try { bcdp.ws.close(); } catch (e) { /* 已关闭 */ }
-  }
 }
 
 /** 轮询会话规则（白名单式：每 host 一条），直到匹配或超时 */
@@ -137,7 +39,7 @@ async function untilRules(predicate, timeout = 8000) {
   const deadline = Date.now() + timeout;
   let last = '';
   for (;;) {
-    const raw = await swEval(`chrome.declarativeNetRequest.getSessionRules().then(rs => JSON.stringify(rs.map(r => ({h: r.condition.initiatorDomains[0], ex: (r.condition.excludedRequestDomains || []).slice().sort(), t: r.condition.resourceTypes}))))`).catch((e) => null);
+    const raw = await swEval(PORT, `chrome.declarativeNetRequest.getSessionRules().then(rs => JSON.stringify(rs.map(r => ({h: r.condition.initiatorDomains[0], ex: (r.condition.excludedRequestDomains || []).slice().sort(), t: r.condition.resourceTypes}))))`).catch((e) => null);
     if (raw) {
       last = raw;
       const info = JSON.parse(raw);
@@ -158,13 +60,7 @@ async function closeTab(cdp) {
 }
 
 // ---------------- 启动浏览器 ----------------
-rmSync(PROFILE, { recursive: true, force: true });
-const proc = spawn(CHROME, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`, 'about:blank'
-], { stdio: 'ignore' });
+const proc = launchChrome({ port: PORT, profile: PROFILE });
 const watchdog = setTimeout(() => { console.error('⏱ 超时退出'); try { proc.kill('SIGKILL'); } catch (e) {} process.exit(2); }, 420000);
 
 const SR = `document.getElementById('novel-reader-host').shadowRoot`;
@@ -210,7 +106,7 @@ try {
     await NR.sleep(200);
     NR.loader.fetchDoc = orig;
     const st = NR.reader.state;
-    const urls = st.chapters.map(c => c.data.url);
+    const urls = st.chapters.map(c => c.meta.url);
     return {
       dom: ${SR}.querySelectorAll('.nr-chapter').length,
       len: st.chapters.length,
@@ -227,14 +123,14 @@ try {
     // 构建 14 章（直接走与自动拼接相同的 _appendByUrl 路径，读位推进到末章）
     while (st.chapters.length < 14) {
       st.currentIndex = st.chapters.length - 1;
-      const u = st.chapters[st.chapters.length - 1].data.nextUrl;
+      const u = st.chapters[st.chapters.length - 1].meta.nextUrl;
       if (!u) break;
       await NR.reader._appendByUrl(u, false);
     }
     const built = st.chapters.length;
     // 逐步回翻到第 1 章
     let stuck = 0, dups = 0, lenChanges = 0;
-    const uniq = () => { const us = st.chapters.map(c => c.data.url); return new Set(us).size === us.length; };
+    const uniq = () => { const us = st.chapters.map(c => c.meta.url); return new Set(us).size === us.length; };
     for (let step = 0; step < 30 && st.currentIndex > 0; step++) {
       const before = st.currentIndex;
       const lenBefore = st.chapters.length;
@@ -258,7 +154,7 @@ try {
   const r3b = await evalJs(cdp1, `(async () => {
     const st = NR.reader.state;
     let dups = 0;
-    const uniq = () => { const us = st.chapters.map(c => c.data.url); return new Set(us).size === us.length; };
+    const uniq = () => { const us = st.chapters.map(c => c.meta.url); return new Set(us).size === us.length; };
     for (let i = 0; i < 50; i++) {
       if (i % 2) NR.reader.goNext(); else NR.reader.goPrev();
       await NR.sleep(170);
@@ -307,7 +203,7 @@ try {
       done, err, closedOk, reopened,
       rejects: window.__nrRejects.slice(),
       newLen: st2.chapters.length,
-      has15: st2.chapters.some(c => c.data.url.indexOf('/15.html') >= 0),
+      has15: st2.chapters.some(c => c.meta.url.indexOf('/15.html') >= 0),
       catalogCarried: st2.catalogList == null
     };
   })()`, ctx1);
@@ -369,16 +265,16 @@ try {
       NR.reader._appendChapter(mk(i));
     }
     const withEl = st.chapters.filter(c => c.el).length;
-    const full = st.chapters.filter(c => c.data.paragraphs && c.data.paragraphs.length).length;
+    const full = st.chapters.filter(c => c.data && c.data.paragraphs && c.data.paragraphs.length).length;
     // loader 缓存上限：注入 300 条成功缓存后按当前窗口 prune
     for (let i = 0; i < 300; i++) NR.loader.cache.set('${BASE}/cache/' + i + '.html', { status: 'ok', chapter: { url: '${BASE}/cache/' + i + '.html' } });
-    NR.loader.prune(st.chapters.filter(c => c.el).map(c => c.data.url));
+    NR.loader.prune(st.chapters.filter(c => c.el).map(c => c.meta.url));
     return {
       total: st.chapters.length,
       withEl, full,
       cacheSize: NR.loader.cache.size,
       evicted: !NR.loader.cache.has('${BASE}/cache/0.html'),
-      metaOnlyOk: !st.chapters[0].data.paragraphs
+      metaOnlyOk: !st.chapters[0].data
     };
   })()`, ctx6);
   check('300 章记录保留（可回翻导航）', r6.total === 300, JSON.stringify(r6));
@@ -399,7 +295,7 @@ try {
     const lenBefore = st.chapters.length;
     NR.reader.goPrev();
     await NR.sleep(400);
-    const urls = st.chapters.map(c => c.data.url);
+    const urls = st.chapters.map(c => c.meta.url);
     return {
       back: st.currentIndex,
       len: st.chapters.length,
@@ -458,8 +354,8 @@ try {
     evalJs(cdpA, `location.assign(${JSON.stringify(urlA2)})`).catch(() => {}),
     evalJs(cdpB, `location.assign(${JSON.stringify(urlB2)})`).catch(() => {})
   ]);
-  await cdpA.waitEventCompat('Page.loadEventFired', 20000).catch(() => {});
-  await cdpB.waitEventCompat('Page.loadEventFired', 20000).catch(() => {});
+  await cdpA.waitEvent('Page.loadEventFired', 20000).catch(() => {});
+  await cdpB.waitEvent('Page.loadEventFired', 20000).catch(() => {});
   await sleep(3500);
   const landedA = await evalJs(cdpA, `(()=>{const h=document.getElementById('novel-reader-host');return h?h.shadowRoot.querySelector('.nr-ch-title').textContent:'no-reader'})()`);
   const landedB = await evalJs(cdpB, `(()=>{const h=document.getElementById('novel-reader-host');return h?h.shadowRoot.querySelector('.nr-ch-title').textContent:'no-reader'})()`);
@@ -531,7 +427,7 @@ try {
   check('最终值已持久化', r10.stored === r10.lastVal, JSON.stringify(r10));
   await closeTab(cdp10);
 } catch (e) {
-  failed++;
+  fail();
   console.error('  ✗ 测试执行异常：', e.message);
 }
 
@@ -540,5 +436,5 @@ try { proc.kill('SIGKILL'); } catch (e) {}
 await sleep(500);
 let cleanErr = null;
 try { rmSync(PROFILE, { recursive: true, force: true }); } catch (e) { cleanErr = e; }
-console.log(`\n结果：${passed} 通过，${failed} 失败${cleanErr ? '（临时目录清理失败，可忽略）' : ''}`);
-process.exit(failed ? 1 : 0);
+if (cleanErr) console.log('（临时目录清理失败，可忽略）');
+process.exit(summary() ? 1 : 0);

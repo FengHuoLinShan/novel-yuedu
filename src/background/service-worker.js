@@ -8,19 +8,11 @@
  * 注入 background.scripts 事件页字段加载本文件（无需 importScripts 任何依赖）。
  */
 
-// 与 manifest content_scripts 保持一致（兜底注入用）
-const CONTENT_SCRIPT_FILES = [
-  'src/lib/purify.min.js',
-  'src/lib/Readability.js',
-  'src/lib/Readability-readerable.js',
-  'src/content/detector.js',
-  'src/content/cleaner.js',
-  'src/content/extractor.js',
-  'src/content/next-chapter.js',
-  'src/content/settings-panel.js',
-  'src/content/reader-view.js',
-  'src/content/main.js'
-];
+// 兜底注入的脚本清单：以 manifest 为唯一来源（避免手抄副本漂移，见 ADR-0003）。
+// 过滤掉主世界脚本（world: 'MAIN' 的 kbd-guard 由 toggleReaderInActiveTab 单独注入）。
+const CONTENT_SCRIPT_FILES = (chrome.runtime.getManifest().content_scripts || [])
+  .filter((cs) => cs.world !== 'MAIN')
+  .flatMap((cs) => cs.js || []);
 
 const SESSION_RULE_BASE_ID = 9000;
 
@@ -145,25 +137,55 @@ async function handleDnrSession(enable, host, tabId) {
 }
 
 /** 由所有活跃阅读标签页的 host 重建会话规则（同 host 多标签页只生成一组，每组一条） */
+/**
+ * 白名单放行域：本站 host + 去 www. 裸域 + （适当时）去首段父域。
+ * DNR 域名匹配自带子域向下展开，放行父域即放行全部兄弟子域——m./wap.
+ * 前缀站点的 img./static./cdn. 兄弟子域资源极常见，只放行 host 本身会误伤。
+ * 安全性不受损：随机子域广告挂在广告联盟自己的域名下，不在本站父域之内。
+ *
+ * 两种情形不放行父域（无 PSL 的保守启发式）：
+ *  - IP 字面量（尾段全数字 = IPv4，含冒号 = IPv6）：按段切分会得出伪域名；
+ *  - 父域疑似公共后缀（host 恰好 3 段且末两段均 ≤3 字符，如 abc.com.cn
+ *    去掉首段得 com.cn，放行它等于放行整个二级公共后缀，白名单失效）。
+ *    ≥4 段时（m.example.com.cn → example.com.cn）父域仍带站点名，放行安全。
+ */
+function allowDomains(host) {
+  const labels = host.split('.');
+  const isIp = labels.length > 1 && /^\d+$/.test(labels[labels.length - 1]);
+  let parent = null;
+  if (!isIp && host.indexOf(':') < 0 && labels.length >= 3) {
+    const tail = labels.slice(-2);
+    const looksLikePublicSuffix = labels.length === 3 && tail.every((l) => l.length <= 3);
+    if (!looksLikePublicSuffix) parent = labels.slice(1).join('.');
+  }
+  return [...new Set([host, host.replace(/^www\./, ''), parent].filter(Boolean))];
+}
+
 async function rebuildSessionRules() {
   const dnr = chrome.declarativeNetRequest;
   const existing = await dnr.getSessionRules();
   // 先删后建必须在同一次 updateSessionRules 里完成：分开会有拦截空窗，
   // 且重复 add 已存在的规则 ID 会报 Duplicate rule ID（整批被拒）
   const removeRuleIds = existing.filter((r) => r.id >= SESSION_RULE_BASE_ID).map((r) => r.id);
+  const types = blockableTypes();
+  if (!types.length) {
+    // 极端环境（ResourceType 枚举不可用）：空 resourceTypes 会让规则被拒、
+    // 白名单静默失效，比不拦更糟——宁可只清残留规则、整体跳过本层防护
+    if (removeRuleIds.length) await dnr.updateSessionRules({ removeRuleIds });
+    return;
+  }
   const addRules = [...new Set(readingTabs.values())].map((host, hi) => ({
     id: SESSION_RULE_BASE_ID + hi,
     priority: 1,
     action: { type: 'block' },
     condition: {
-      // 白名单式：拦"本站发起、目标域名不是本站"的全部请求。盗版站的弹窗/跳转广告
-      // 脚本普遍用随机子域+高位端口动态下发，黑名单永远追不全，白名单一次覆盖。
-      // 放行域含去 www. 的裸域（DNR 域名匹配自带子域展开，裸域条目即放行全部
-      // 子域）；跨域镜像站的章节链接会被拦，属可接受代价（关闭
-      // “阅读时只放行本站请求”设置即可恢复）
+      // 白名单式：拦"本站发起、目标域名不在放行集"的全部请求。盗版站的弹窗/跳转
+      // 广告脚本普遍用随机子域+高位端口动态下发，黑名单永远追不全，白名单一次覆盖。
+      // 放行集见 allowDomains；跨父域镜像站的章节链接会被拦，属可接受代价
+      // （关闭“阅读时只放行本站请求”设置即可恢复）
       initiatorDomains: [host],
-      excludedRequestDomains: [...new Set([host, host.replace(/^www\./, '')])],
-      resourceTypes: blockableTypes()
+      excludedRequestDomains: allowDomains(host),
+      resourceTypes: types
     }
   }));
   if (!removeRuleIds.length && !addRules.length) return;

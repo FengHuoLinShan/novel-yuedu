@@ -1,10 +1,10 @@
 # 小说悦读 — Chrome 沉浸式小说阅读扩展
 
-一键把杂乱的小说页面重排为干净的全屏阅读视图：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录。
+一键把杂乱的小说页面重排为干净的全屏阅读视图：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录、离线简繁转换、端侧翻译、阅读期间页面导航锁定。
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.12 · 安装包见 [Releases](../../releases)
+> 版本：0.2.13 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -14,7 +14,10 @@ Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / L
 |---|---|
 | **自动排版适应屏幕** | 整页替换式阅读视图（Shadow DOM 隔离原站样式），正文宽度 30–100% 视口百分比任意调（100% 即当前设备全屏，横竖屏/换屏自动适配），另设全屏宽度快捷开关；段落两字缩进 |
 | **字号/行距/字体/主题** | 字号 14–28px、行距 1.5–2.6、四种字体（默认/宋体/黑体/楷体）、明/暗/羊皮纸三主题，设置跨设备同步 |
-| **屏蔽广告与图片** | 重排版天然丢弃原站广告脚本与弹窗；行级清洗水印文案；正文图片默认不加载可开关；阅读时对当前站点自动启用**白名单式网络拦截**（会话级 DNR：仅放行本站域名，其余请求含弹窗跳转一律拦截），并在主世界拦截跨源导航 / `window.open` / meta refresh，防已驻留广告脚本强制跳页；另有全局广告域名黑名单开关 |
+| **简繁转换** | 内置 OpenCC 字表 + 8000 余条词组消歧（头发→頭髮、后面→後面），离线即时切换 原文/简体/繁體；正文、章节标题、顶部栏、目录列表同步转换，简繁目录下搜索同样生效 |
+| **端侧翻译** | Chrome 138+ 内置 Translator API：本机模型翻译，免配置、离线可用、正文不出设备；顶部栏「译」一键循环 关闭→替换原文→双语对照，设置面板可选源语言（自动检测）与目标语言（中简/中繁/英/日/韩/法/德/西/俄）；译文按章节缓存，翻回零等待；不支持的浏览器自动隐藏入口 |
+| **屏蔽广告与图片** | 重排版天然丢弃原站广告脚本与弹窗；行级清洗水印文案；正文图片默认不加载可开关；阅读时对当前站点自动启用**白名单式网络拦截**（会话级 DNR：仅放行本站域名，其余请求含弹窗跳转一律拦截） |
+| **阅读期间导航锁定** | 进入阅读模式后，站点脚本的任何整页跳转（`location` 同源/跨源、meta refresh、表单提交）、`window.open` 弹窗、`history` 篡改、合成点击一律在主世界拦截，阅读器宿主被摘除自动挂回——**不会自动退出阅读模式、不会跳转到任何页面、不会打开新页面**；阅读器自身的目录跳转/返回上一章经一次性放行标记正常工作；地址栏手动输入等浏览器侧导航不受限；可在设置中关闭 |
 | **预加载下一章** | 进入章节即后台抓取解析下 2 章；滚动距底约一屏无缝拼接；`→` 即时翻章零等待；失败 3 次熔断，目录页链接识别为尾章 |
 | **目录快速跳转** | 阅读视图「☰ 目录」拉取目录页生成章节列表，打开自动定位到当前阅读章节；搜索框输入章节号/标题即时过滤，精确到唯一章节时自动定位到该章附近（可见前后章节再跳），点击直达并自动回到阅读模式 |
 | **阅读进度记录** | 按书分卷记录（目录页为书键，识别漂移时按章节 URL 目录自动归并），进度存**章内位置**——与自动拼接的章节数无关，续读恢复永远精确；章节切换即时落库，进度始终跟随屏幕正显示的章节；弹窗「最近阅读」显示每本书读到的章节与百分比，点「续读」回到上次那行；从同书其他章节进入时正文顶部出现「📖 上次读到《…》」提示条，一键跳回 |
@@ -102,24 +105,30 @@ python3 tools/gen_fixtures.py
 # 2. 启动本地站点
 python3 -m http.server -d test/fixtures 8080
 
-# 3. 单元测试（清洗器/导航识别/编码探测/书籍记录匹配，31 项断言）
+# 3. 单元测试（清洗器/导航识别/编码探测/简繁转换/进度·意图·站点·设置模块，64 项断言）
 node tools/test-core.mjs
 
-# 4. 端到端测试（headless Chrome for Testing 实际加载扩展，47 项断言）
+# 4. 端到端测试（headless Chrome for Testing 实际加载扩展，53 项断言）
 #    需 Playwright 缓存的 Chrome for Testing（正式版 Chrome 137+ 已移除 --load-extension）
 node tools/e2e-test.mjs "$PWD"
 
 # 5. 章节收起等高占位回归（桌面/手机视口，66 项断言；含点击翻页后工具栏不误弹）
 node tools/e2e-trim.mjs "$PWD"
 
-# 6. 长时使用稳定性回归（生命周期/多标签页/DNR/写入节流，39 项断言，对应 STAB-001~010）
+# 6. 长时使用稳定性回归（生命周期/多标签页/DNR/写入节流，41 项断言，对应 STAB-001~010）
 node tools/e2e-lifecycle.mjs "$PWD"
 
 # 7. 键盘隔离与 Mac 快捷键回归（站点 ←/→ 脚本劫持、Esc 浮层语义，19 项断言）
 node tools/e2e-keyboard.mjs "$PWD"
 
-# 8. 广告防护回归（白名单 DNR / 主世界导航与弹窗拦截，17 项断言）
+# 8. 广告防护回归（白名单 DNR / 主世界导航与弹窗拦截 / 设置热更新，19 项断言）
 node tools/e2e-adguard.mjs "$PWD"
+
+# 9. 目录定位与移动端触控热区回归（29 项断言）
+node tools/e2e-catalog.mjs "$PWD"
+
+# 10. 工具栏弹窗尺寸适配与确定性收起回归（21 项断言）
+node tools/e2e-popup.mjs "$PWD"
 ```
 
 手动验证：浏览器访问 `http://127.0.0.1:8080/utf8site/1.html`（UTF-8）与 `http://127.0.0.1:8080/gbksite/1.html`（GBK 编码），然后走一遍悬浮按钮 → 滚动拼接 → 翻章 → 设置 → Esc 流程。
@@ -131,26 +140,38 @@ node tools/e2e-adguard.mjs "$PWD"
 ```
 manifest.json               MV3 配置（内容脚本按序加载，无打包）
 rules/sites.json            站点规则表（generic 通用选择器 + 具名站点覆盖）
-rules/dnr-blocklist.json    广告域名静态 DNR 规则（默认关闭，popup 可开）
-src/lib/                    vendored：Readability / Readability-readerable / DOMPurify
+src/lib/                    vendored：Readability / Readability-readerable / DOMPurify / chinese-convert.js（OpenCC 字表，tools/gen_cc.py 生成）
 src/content/
   detector.js               公共工具、导航链接正则、小说页检测
+  storage.js                chrome.storage 适配器与可注入测试缝（local / sync）
   cleaner.js                行级文本清洗（水印/网址行/重复行/半角标点）
   extractor.js              三层正文提取管线 + 上一章/下一章/目录识别
   next-chapter.js           预加载器：fetch + 编码探测 + 解析缓存 + 熔断限速
-  reader-view.js            阅读视图：Shadow DOM、等高占位滚动拼接、快捷键、进度记忆
-  kbd-guard.js              主世界守卫（world:MAIN）：阅读期间阻断站点 ←/→ 翻章脚本，并拦截跨源导航 / window.open / meta refresh
-  settings-panel.js         排版设置模型与面板 UI
-  main.js                   入口：悬浮按钮、消息、黑名单、设置热更新
+  translator.js             端侧翻译封装（Translator API 检测 / 实例缓存 / 批量翻译 / 源语言检测）
+  settings.js               排版/文本偏好设置模型（载入、debounce 持久化、变更订阅）
+  progress.js               书籍阅读进度存储（p:<书键> 键方案、旧格式迁移、目录归并、200 本淘汰）
+  intent.js                 跳转意图（po:<URL> 键、TTL、旧 pendingOpen 兼容、多标签页隔离）
+  sites.js                  站点启停（host/子域匹配、停用列表读写）
+  settings-panel.js         排版设置面板 UI
+  chapter-window.js         章节窗口：记录形态、滑动裁剪、等高占位几何、按需回填
+  reader-view.js            阅读视图：Shadow DOM、简繁/翻译渲染管线、快捷键、进度记忆
+  kbd-guard.js              主世界守卫（world:MAIN）：键盘隔离 + 阅读期间导航锁定（navigate / window.open / history / click / submit / meta refresh）
+  main.js                   入口：悬浮按钮、消息、站点启停、设置热更新
 src/background/             service worker：命令分发、按需注入、会话级 DNR
 src/popup/                  工具栏弹窗
-tools/                      图标/fixture/DNR 生成器 + 单元/e2e 测试
+tools/                      图标/fixture/简繁字表生成器 + 共享测试基座（harness.mjs）+ 单元/e2e 测试
 test/fixtures/              本地小说站（UTF-8 与 GBK）
+CONTEXT.md                  领域术语表（书籍/章节/章节窗口/网络层防护/页面层守卫等）
+docs/adr/                   架构决策记录（ADR-0001~0004）
+docs/reviews/               架构整合审查报告（终版，不进入扩展包）
 ```
 
 ## 已知限制（v1）
 
 - 正文由站点前端 JS 动态注入（无服务端 HTML）的页面，fetch 预取拿不到正文；当前页仍可正常阅读（v2 预留降级通道：background 抓取 / iframe + DNR 去 X-Frame-Options）
+- 端侧翻译依赖 Chrome 138+ 的内置 Translator API（首次使用需下载本机模型）；Firefox 与旧版浏览器自动隐藏翻译入口，其余功能不受影响
+- Firefox 无 Navigation API，导航锁定退化为 DNR 拦跨站 + beforeunload 原生确认框（站点强跳会被拦下，代价是阅读中手动关标签页也会弹一次确认）
+- 简繁转换为字表 + 词组消歧级（非完整 OpenCC 短语库），个别多音字词可能误转；s2t 对"已含繁体的混合文本"不做二次保护（正常使用时始终从原文转换）
 - 进度记忆只恢复"同一章节 URL"；跨章节续读需 v2（沿预取链回放）
 - 预取受同源限制：下一章链接指向其他域名时视为尾章
 - SPA 站点（客户端路由切章）支持有限，悬浮按钮每 10 秒重判一次
@@ -162,7 +183,7 @@ test/fixtures/              本地小说站（UTF-8 与 GBK）
 ## 声明
 
 - 本扩展是**纯本地工具**：只在用户浏览器内对当前页面做重排版，不存储、不上传、不分发任何小说内容；排版设置与阅读进度仅保存在本地浏览器 `storage`，**不收集任何数据、无任何网络上报**。
-- 阅读时的网络拦截为**白名单式**（仅放行本站域名，默认开启，可在设置中关闭），且仅在阅读视图打开期间对当前站点会话级生效；全局广告域名黑名单默认关闭，需用户在弹窗中显式开启。
+- 阅读时的网络拦截为**白名单式**（仅放行本站域名，默认开启，可在设置中关闭），且仅在阅读视图打开期间对当前站点会话级生效。
 - 站点规则只是识别正文节点的通用 CSS 选择器，不绕过任何付费或访问限制；付费内容请通过正版渠道阅读，支持原作者。
-- 内置第三方库：[Mozilla Readability](https://github.com/mozilla/readability)（Apache-2.0）、[DOMPurify](https://github.com/cure53/DOMPurify)（Apache-2.0 / MPL-2.0），详见 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)。
+- 内置第三方库：[Mozilla Readability](https://github.com/mozilla/readability)（Apache-2.0）、[DOMPurify](https://github.com/cure53/DOMPurify)（Apache-2.0 / MPL-2.0）、[OpenCC](https://github.com/BYVoid/OpenCC) 词典（Apache-2.0，离线简繁转换字表数据源），详见 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)。
 - 本项目按 [MIT License](LICENSE) 开源，仅供学习与个人使用；如有侵权请联系移除相关内容。

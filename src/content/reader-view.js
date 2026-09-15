@@ -60,7 +60,7 @@
       flex: 1; overflow-y: auto; position: relative; overscroll-behavior: contain;
       padding: 84px calc(18px + env(safe-area-inset-right, 0px)) calc(96px + env(safe-area-inset-bottom, 0px)) calc(18px + env(safe-area-inset-left, 0px)); /* 顶部留足悬浮工具栏高度（书名+章节名两行约 60px），避免遮挡章节标题；底部避开全面屏手势条 */
       -webkit-overflow-scrolling: touch;
-      /* 章节收起/回填的几何由等高占位柱保持（_trimChapters），禁用原生滚动锚定防止双重偏移 */
+      /* 章节收起/回填的几何由等高占位柱保持（chapter-window.js 的 trim），禁用原生滚动锚定防止双重偏移 */
       overflow-anchor: none;
       scrollbar-width: thin; scrollbar-color: var(--nr-line) transparent;
     }
@@ -75,6 +75,8 @@
     }
     .nr-p { margin: 0 0 0.95em; text-align: justify; }
     .nr-indent .nr-p { text-indent: 2em; }
+    /* 双语对照的译文段：贴住上一段原文、弱化显示 */
+    .nr-p-tr { color: var(--nr-muted); font-size: .92em; margin-top: -0.7em; text-align: justify; }
     .nr-chapter img { max-width: 100%; height: auto; display: block; margin: 1em auto; }
     .nr-img-hidden .nr-chapter img { display: none !important; }
     .nr-chapter-sep {
@@ -249,7 +251,7 @@
       const state = (this.state = {
         originalUrl: location.href,
         originalTitle: document.title,
-        chapters: [], // [{data, el}]
+        chapters: [], // 章节记录数组（{meta,data,el,translating}），由章节窗口持有，见 _buildUI
         currentIndex: 0,
         appending: false,
         appendingUrl: null, // 正在拼接的 URL（同 URL 并发去重）
@@ -260,10 +262,11 @@
         lastPrefetchAt: 0,
         headerHideTimer: 0,
         progressTimer: 0,
-        collapsedCount: 0,
-        pillowEl: null, // 等高占位柱：顶住已收起上方章节的流高度
+        collapsedCount: 0, // 仅为 defineProperty 之前的安全初值；此后由章节窗口的 getter 覆盖（见 _buildUI）
         progScroll: false, // 程序性滚动进行中（翻章跳转/进度恢复）：滚动监听跳过工具栏手势判定
         restoredRatio: null,
+        appliedTextPrefs: null, // 文本偏好（简繁/翻译）已应用值，用于变更检测
+        appliedDnr: null, // 网络层防护开关已应用值，用于变更检测
         catalogList: null,
         catalogLoading: false,
         landingIntent: NR._autoOpenIntent || null // 落地方式：resume=续读（恢复位置）/ jump=主动跳转（不提示不恢复）
@@ -296,6 +299,16 @@
         window.removeEventListener('pagehide', state.pageHideHandler);
         document.removeEventListener('visibilitychange', state.pageHideHandler);
         if (state.bodyObserver) state.bodyObserver.disconnect();
+        if (state.hostObserver) state.hostObserver.disconnect();
+        if (state.unsubscribeSettings) state.unsubscribeSettings();
+        if (state.panelApi && state.panelApi.dispose) state.panelApi.dispose();
+      } catch (e) {
+        /* 忽略 */
+      }
+      // 先解除导航锁定再放行宿主移除：守卫以宿主存在与否为开关，顺序反了会被自己拦下
+      try {
+        document.documentElement.removeAttribute('data-nr-nav-lock');
+        document.documentElement.removeAttribute('data-nr-nav-allow');
       } catch (e) {
         /* 忽略 */
       }
@@ -345,6 +358,9 @@
         '  <div class="nr-titles"><div class="nr-book"></div><div class="nr-chapter-name"></div></div>' +
         '  <div class="nr-actions">' +
         '    <button class="nr-act" data-act="catalog" title="目录与快速跳转">☰ <span class="nr-act-text">目录</span></button>' +
+        (NR.translateSupported && NR.translateSupported()
+          ? '    <button class="nr-act" data-act="translate" title="翻译：点击循环 关闭→替换原文→双语对照">译</button>'
+          : '') +
         '    <button class="nr-act nr-accent" data-act="settings" title="排版设置">Aa</button>' +
         '    <button class="nr-act" data-act="prev" title="上一章（←）">‹ <span class="nr-act-text">上一章</span></button>' +
         '    <button class="nr-act" data-act="next" title="下一章（→）"><span class="nr-act-text">下一章</span> ›</button>' +
@@ -375,6 +391,35 @@
       state.progressBar = root.querySelector('.nr-progress');
       this.rootEl = root;
 
+      // 章节窗口：记录形态、滑动裁剪与等高占位几何都在模块内（见 ADR-0004）
+      state.window = NR.createChapterWindow({
+        container: state.pages,
+        maxDom: MAX_DOM_CHAPTERS,
+        keepBehind: KEEP_BEHIND,
+        keepAhead: KEEP_AHEAD,
+        loadContent: (url) => NR.loader.getChapter(url),
+        buildEl: (data) => this._buildChapterEl(data),
+        onBuilt: (rec) => this._ensureChapterTranslated(rec),
+        onInsert: () => {
+          state.progScroll = true;
+          requestAnimationFrame(() => { state.progScroll = false; });
+        },
+        pruneKeep: (urls) => NR.loader.prune(urls),
+        isAlive: () => this._alive(state)
+      });
+      state.chapters = state.window.records;
+      // 测试与既有代码以 state.currentIndex / state.collapsedCount 访问窗口状态
+      Object.defineProperty(state, 'currentIndex', {
+        configurable: true,
+        get: () => state.window.currentIndex,
+        set: (v) => { state.window.currentIndex = v; }
+      });
+      // 只读：由章节窗口维护，外部不得赋值（accessor 无 setter，严格模式下赋值会抛错）
+      Object.defineProperty(state, 'collapsedCount', {
+        configurable: true,
+        get: () => state.window.collapsedCount
+      });
+
       // 设置面板
       const panelBox = root.querySelector('.nr-panel');
       const panel = NR.buildSettingsPanel();
@@ -396,6 +441,7 @@
         const act = btn.dataset.act;
         if (act === 'settings') this._togglePanel();
         else if (act === 'catalog') this._toggleCatalog();
+        else if (act === 'translate') this._cycleTranslate();
         else if (act === 'prev') this.goPrev();
         else if (act === 'next') this.goNext();
         else if (act === 'exit') this.close();
@@ -414,14 +460,29 @@
         if (item) this._jumpTo(item.dataset.url);
       });
 
-      state.headerBook.textContent = firstChapter.bookTitle || '';
-      state.headerChapter.textContent = firstChapter.title || '';
+      state.headerBook.textContent = NR.ccConvert(firstChapter.bookTitle || '', NR.settings.textConvert);
+      state.headerChapter.textContent = NR.ccConvert(firstChapter.title || '', NR.settings.textConvert);
+      this._updateTranslateBtn();
 
       // 未识别到目录页时隐藏目录按钮
       if (!firstChapter.indexUrl) {
         const catalogBtn = root.querySelector('[data-act="catalog"]');
         if (catalogBtn) catalogBtn.style.display = 'none';
       }
+
+      // 防强制退出（阅读器保活不变量，见 CONTEXT.md）：站点脚本若把阅读器宿主
+      // 节点从 DOM 摘除，立即挂回（body 的 display:none 由 _hideOriginal 的
+      // observer 保持，两者互补）
+      state.hostObserver = new MutationObserver(() => {
+        if (this.isOpen && state.host && !state.host.isConnected) {
+          try {
+            document.documentElement.appendChild(state.host);
+          } catch (e) {
+            /* 忽略 */
+          }
+        }
+      });
+      state.hostObserver.observe(document.documentElement, { childList: true });
 
       // 滚动
       state.scrollHandler = () => this._onScroll();
@@ -514,7 +575,8 @@
       document.addEventListener('visibilitychange', state.pageHideHandler);
 
       document.documentElement.appendChild(host);
-      NR.applySettings();
+      state.unsubscribeSettings = NR.subscribeSettings(() => this._applySettings());
+      this._applySettings();
       this._showHeader();
     },
 
@@ -557,7 +619,7 @@
     async _ensureCatalog() {
       const state = this.state;
       if (state.catalogList || state.catalogLoading) return;
-      const indexUrl = state.chapters[0] && state.chapters[0].data.indexUrl;
+      const indexUrl = state.chapters[0] && state.chapters[0].meta.indexUrl;
       if (!indexUrl) {
         this._renderCatalogError('未识别到本书目录页');
         return;
@@ -616,7 +678,7 @@
      */
     _catalogCurIndex(list) {
       const cur = this.state.chapters[this.state.currentIndex];
-      const curUrl = cur && cur.data.url;
+      const curUrl = cur && cur.meta.url;
       if (!curUrl) return -1;
       for (let i = 0; i < list.length; i++) {
         if (list[i].url === curUrl) return i;
@@ -648,12 +710,16 @@
       const listEl = state.root.querySelector('.nr-catalog-list');
       const list = state.catalogList;
       if (!list) return;
+      // 简繁转换开启时，目录展示与搜索都基于转换后的标题（用户看到什么就搜什么）
+      const conv = NR.settings.textConvert;
+      const dispTitles = conv === 'none' ? null : list.map((it) => NR.ccConvert(it.title, conv));
+      const titleAt = (i) => (dispTitles ? dispTitles[i] : list[i].title);
       const q = String(filterText || '').trim().toLowerCase();
       let hitIdx = -1;
       if (q) {
         let hits = 0;
         for (let i = 0; i < list.length && hits <= 1; i++) {
-          if (list[i].title.toLowerCase().indexOf(q) >= 0) {
+          if (titleAt(i).toLowerCase().indexOf(q) >= 0) {
             hits++;
             hitIdx = i;
           }
@@ -666,11 +732,11 @@
       let shown = 0;
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
-        if (q && hitIdx < 0 && item.title.toLowerCase().indexOf(q) < 0) continue;
+        if (q && hitIdx < 0 && titleAt(i).toLowerCase().indexOf(q) < 0) continue;
         if (shown >= CATALOG_RENDER_CAP) break; // 超长书目保护（与解析上限一致）
         const d = document.createElement('div');
         d.className = 'nr-cat-item' + (i === curIdx ? ' nr-cur' : '') + (i === hitIdx ? ' nr-hit' : '');
-        d.textContent = item.title;
+        d.textContent = titleAt(i);
         d.dataset.url = item.url;
         frag.appendChild(d);
         shown++;
@@ -697,13 +763,9 @@
       }
     },
 
-    /**
-     * 写跳转标记：每个目标 URL 一条独立 storage key（po:<url>），
-     * 两个标签页同时跳不同章节互不覆盖，落地页只消费自己命中的条目。
-     */
+    /** 写跳转意图：委托 NR.intent（键方案、TTL、多标签页隔离都在模块内，见 ADR-0001） */
     _setPendingOpen(url, intent) {
-      const key = 'po:' + String(url).split('#')[0];
-      return chrome.storage.local.set({ [key]: { url: url, ts: Date.now(), intent: intent } });
+      return NR.intent.declare(url, intent);
     },
 
     /** 跳转到指定章节：写跳转标记后导航，新页面自动进入阅读模式（jump 意图：不恢复旧位置） */
@@ -711,6 +773,7 @@
       if (!url || !this.isOpen) return;
       this._saveProgressNow();
       this._toggleCatalog(false);
+      this._allowNavOnce(); // 阅读器主动导航：向主世界守卫申领一次性放行（否则被导航锁定拦下）
       if (!NR.extAlive()) {
         // 扩展上下文失效：无法携带自动打开标记，直接普通导航
         NR.toast('正在跳转…（扩展已更新，跳转后请手动进入阅读模式）', 2600);
@@ -726,6 +789,27 @@
       }
     },
 
+    /**
+     * 向主世界导航守卫申领一次性放行：1 秒内的一次导航不被锁定拦截。
+     * 跨世界只通 DOM 属性（同 kbd-guard 的 #novel-reader-host 开关约定）。
+     */
+    _allowNavOnce() {
+      try {
+        document.documentElement.setAttribute('data-nr-nav-allow', String(Date.now()));
+      } catch (e) {
+        /* 忽略 */
+      }
+    },
+
+    /** 把"阅读时锁定页面"开关同步给主世界守卫（阅读器开/关及设置变更时调用） */
+    updateNavLockAttr() {
+      try {
+        document.documentElement.setAttribute('data-nr-nav-lock', NR.settings.navLock ? '1' : '0');
+      } catch (e) {
+        /* 忽略 */
+      }
+    },
+
     // ---------------- 原页面隐藏与还原 ----------------
 
     _hideOriginal() {
@@ -736,7 +820,7 @@
       state.prevHtmlOverflow = html.style.overflow;
       body.style.setProperty('display', 'none', 'important');
       html.style.overflow = 'hidden';
-      // 某些站点脚本会重写 body 内联样式，盯住并保持隐藏
+      // 某些站点脚本会重写 body 内联样式，盯住并保持隐藏（阅读器保活不变量，见 CONTEXT.md）
       state.bodyObserver = new MutationObserver(() => {
         if (this.isOpen && getComputedStyle(body).display !== 'none') {
           body.style.setProperty('display', 'none', 'important');
@@ -760,16 +844,30 @@
       const art = document.createElement('article');
       art.className = 'nr-chapter';
       art.dataset.url = chapter.url;
+      const view = this._displayTexts(chapter);
       const h2 = document.createElement('h2');
       h2.className = 'nr-ch-title';
-      h2.textContent = chapter.title || '';
+      h2.textContent = view.title;
       art.appendChild(h2);
       const frag = document.createDocumentFragment();
-      for (const p of chapter.paragraphs) {
+      const mode = NR.settings.translateMode;
+      for (let i = 0; i < view.orig.length; i++) {
         const el = document.createElement('p');
         el.className = 'nr-p';
-        el.textContent = p;
-        frag.appendChild(el);
+        if (mode === 'replace' && view.trans) {
+          // 替换模式：译文缺失的段落回退原文，不留空洞
+          el.textContent = view.trans[i] || view.orig[i];
+          frag.appendChild(el);
+        } else {
+          el.textContent = view.orig[i];
+          frag.appendChild(el);
+          if (mode === 'bilingual' && view.trans && view.trans[i]) {
+            const tr = document.createElement('p');
+            tr.className = 'nr-p nr-p-tr';
+            tr.textContent = view.trans[i];
+            frag.appendChild(tr);
+          }
+        }
       }
       art.appendChild(frag);
       // 插图：默认由 .nr-img-hidden 隐藏，用户关闭“屏蔽图片”后可见；懒加载避免流量浪费
@@ -784,139 +882,144 @@
       return art;
     },
 
-    _appendChapter(chapter) {
-      const state = this.state;
-      const el = this._buildChapterEl(chapter);
-      state.pages.appendChild(el);
-      state.chapters.push({ data: chapter, el });
-      this._trimChapters();
-      return state.chapters.length - 1;
-    },
-
-    /** 该章节记录是否还持有完整正文（收起时会被裁剪成纯导航元数据） */
-    _hasFullData(c) {
-      return !!(c && c.data && c.data.paragraphs && c.data.paragraphs.length);
+    /**
+     * 章节的展示文本：原文 → 简繁转换 →（按设置叠加）译文。
+     * chapter.paragraphs 永远是原文，转换/翻译只是渲染层视图。
+     * 译文按目标语言命中缓存（chapter.translations 的键为 src>tgt）。
+     */
+    _displayTexts(chapter) {
+      const s = NR.settings;
+      const conv = s.textConvert;
+      const orig = (chapter.paragraphs || []).map((p) => NR.ccConvert(p, conv));
+      let trans = null;
+      if (s.translateMode !== 'off' && chapter.translations) {
+        const suffix = '>' + s.translateTarget;
+        const hitKey = Object.keys(chapter.translations).find((k) => k.endsWith(suffix));
+        if (hitKey) trans = chapter.translations[hitKey];
+      }
+      return { orig, trans, title: NR.ccConvert(chapter.title || '', conv) };
     },
 
     /**
-     * DOM 中最后一章（数组末尾可能是被收起的纯元数据记录）。
-     * 前进拼接、尾部提示、预取都必须以它为锚，否则回翻后继续前读会跳过中间章节。
+     * 按需触发章节翻译（异步）：已有目标语言缓存/正在翻译/翻译关闭时直接返回。
+     * 完成后就地同步 DOM；失败保持原文。译文缓存在 chapter.translations 上，
+     * 随 loader 章节缓存一并淘汰，翻回已译章节零等待。
      */
-    _lastRendered() {
-      const chapters = this.state.chapters;
-      for (let i = chapters.length - 1; i >= 0; i--) {
-        if (chapters[i].el) return chapters[i];
-      }
-      return null;
-    },
-
-    /** 裁剪为可回翻的最小元数据：正文段落/图片不随历史章数驻留内存 */
-    _chapterMeta(data) {
-      return {
-        url: data.url,
-        title: data.title,
-        bookTitle: data.bookTitle,
-        indexUrl: data.indexUrl,
-        prevUrl: data.prevUrl,
-        nextUrl: data.nextUrl
+    _ensureChapterTranslated(rec) {
+      const state = this.state;
+      const s = NR.settings;
+      if (!this._alive(state)) return;
+      if (s.translateMode === 'off') return;
+      if (!NR.translateSupported || !NR.translateSupported()) return;
+      if (!this._hasFullData(rec)) return;
+      const tgt = s.translateTarget;
+      rec.data.translations = rec.data.translations || {};
+      const suffix = '>' + tgt;
+      if (Object.keys(rec.data.translations).some((k) => k.endsWith(suffix))) return;
+      if (rec.translating) return;
+      state.transUnsupported = state.transUnsupported || new Set();
+      if (state.transUnsupported.has(suffix)) return;
+      rec.translating = true;
+      const title = rec.data.title || '';
+      const paras = rec.data.paragraphs.map((p) => NR.ccConvert(p, s.textConvert));
+      let lastToast = 0;
+      const toastThrottled = (msg, ms) => {
+        const now = Date.now();
+        if (now - lastToast > 1600) {
+          lastToast = now;
+          NR.toast(msg, ms);
+        }
       };
+      NR.translateTexts(paras, s.translateSource, tgt, {
+        onProgress: (done, total) => {
+          if (done < total) toastThrottled('翻译中 ' + done + '/' + total + '：' + title, 1300);
+        },
+        onDownload: (loaded, total) =>
+          toastThrottled('首次使用需下载翻译模型 ' + Math.round((loaded / (total || 1)) * 100) + '%', 1600),
+        shouldStop: () =>
+          !this._alive(state) || NR.settings.translateMode === 'off' || NR.settings.translateTarget !== tgt
+      })
+        .then((r) => {
+          rec.translating = false;
+          if (!this._alive(state)) return;
+          rec.data.translations[r.src + '>' + tgt] = r.texts;
+          if (NR.settings.translateMode !== 'off') {
+            this._syncChapterDom(rec);
+            NR.toast('已翻译：' + title, 1200);
+          }
+        })
+        .catch((e) => {
+          rec.translating = false;
+          if (!this._alive(state)) return;
+          if (e && e.code === 'unsupported') {
+            state.transUnsupported.add(suffix);
+            NR.toast('当前浏览器不支持该语种对的端侧翻译，保持原文', 2800);
+          } else if (!e || e.message !== 'aborted') {
+            NR.toast('翻译失败，保持原文：' + title, 2200);
+          }
+        });
     },
 
-    _trimChapters() {
+    /** 按当前设置就地重建章节 DOM 内容（保留 article 元素本身，offsetTop 锚点不动） */
+    _syncChapterDom(rec) {
+      if (!rec || !rec.el || !this._hasFullData(rec)) return;
+      const fresh = this._buildChapterEl(rec.data);
+      const el = rec.el;
+      while (el.firstChild) el.removeChild(el.firstChild);
+      while (fresh.firstChild) el.appendChild(fresh.firstChild);
+    },
+
+    /** 文本偏好（简繁/翻译模式/语种）变更：全部已渲染章节就地重排 + 补触发翻译 */
+    _onTextPrefsChanged() {
       const state = this.state;
-      if (state.chapters.length <= MAX_DOM_CHAPTERS) return;
-      const minKeep = Math.max(0, state.currentIndex - KEEP_BEHIND);
-      const maxKeep = Math.min(state.chapters.length - 1, state.currentIndex + KEEP_AHEAD);
-      // 章节收起采用等高占位柱：移除上方章节后用 pillow div 顶住其原流高度，
-      // 视口几何零变化、scrollTop 零写入 —— 不再有补偿回写（回写曾被滚动监听
-      // 误判为用户上滚而弹出工具栏，也是早期"拼接跳页"bug 的根源）。
-      // 关键顺序：先按"相邻下一存在元素"的 offsetTop 差实测各章流高度并预涨
-      // 占位柱，再移除元素 —— 全程内容高度只增不减，杜绝中途布局刷新把越界
-      // scrollTop 钳位（读取 offsetTop 会强制同步布局，先删后涨必被钳位）。
-      // 下方章节移除不影响上方几何，无需占位。
-      let flow = 0;
-      let hasFlow = false;
-      for (let i = 0; i < minKeep && i < state.chapters.length; i++) {
-        const el = state.chapters[i].el;
-        if (!el) continue;
-        // 流高度用 rect 差值（亚像素）而非 offsetTop 差（已取整）：移动端 dsf 下
-        // 布局高度带小数，取整差会让占位柱偏差 1px，贴底阅读时 scrollTop 被钳掉 1px
-        const rectTop = el.getBoundingClientRect().top;
-        let next = null;
-        for (let j = i + 1; j < state.chapters.length; j++) {
-          if (state.chapters[j].el) { next = state.chapters[j].el; break; }
+      if (!this._alive(state)) return;
+      for (const rec of state.chapters) {
+        if (rec.el) this._syncChapterDom(rec);
+        this._ensureChapterTranslated(rec);
+      }
+      const cur = state.chapters[state.currentIndex];
+      if (cur && cur.meta) {
+        state.headerChapter.textContent = NR.ccConvert(cur.meta.title || '', NR.settings.textConvert);
+        if (cur.meta.bookTitle) {
+          state.headerBook.textContent = NR.ccConvert(cur.meta.bookTitle, NR.settings.textConvert);
         }
-        // 理论上必有下一存在元素（当前章必有 el）；无则退化为 rect 高度（不含外距，宁少勿多）
-        flow += next ? next.getBoundingClientRect().top - rectTop : el.getBoundingClientRect().height;
-        hasFlow = true;
       }
-      if (hasFlow) this._growPillow(flow);
-      for (let i = 0; i < minKeep && i < state.chapters.length; i++) {
-        const c = state.chapters[i];
-        if (c.el) {
-          c.el.remove();
-          c.el = null;
-          c.data = this._chapterMeta(c.data);
-          state.collapsedCount++;
-        }
-      }
-      // 回翻场景：窗口后方（远于 KEEP_AHEAD）的章节同样收起，DOM 不随回翻章数增长
-      for (let i = state.chapters.length - 1; i > maxKeep; i--) {
-        const c = state.chapters[i];
-        if (c.el) {
-          c.el.remove();
-          c.el = null;
-          c.data = this._chapterMeta(c.data);
-        }
-      }
-      this._ensureCollapsedNote();
-      // 只锁定窗口内仍持正文的章节：被裁剪的历史章节允许从 loader 缓存淘汰，
-      // 否则成功缓存会随阅读章数线性增长
-      NR.loader.prune(state.chapters.filter((c) => c.el).map((c) => c.data.url));
-    },
-
-    /** 占位柱长高：顶住已收起上方章节的流高度（等高占位，几何与 scrollTop 全程不变） */
-    _growPillow(h) {
-      const state = this.state;
-      if (!state.pillowEl) {
-        const pillow = document.createElement('div');
-        pillow.className = 'nr-pillow';
-        pillow.style.height = '0px';
-        state.pages.insertBefore(pillow, state.pages.firstChild);
-        state.pillowEl = pillow;
-      }
-      state.pillowEl.style.height = (parseFloat(state.pillowEl.style.height) || 0) + h + 'px';
-    },
-
-    /** 占位柱缩短：回填章节时按插入实测的流高度收缩（收敛到 0 时移除占位柱） */
-    _shrinkPillow(h) {
-      const state = this.state;
-      if (!state.pillowEl || !(h > 0)) return;
-      const next = Math.max(0, (parseFloat(state.pillowEl.style.height) || 0) - h);
-      state.pillowEl.style.height = next + 'px';
-      if (next === 0) this._removePillow();
-    },
-
-    _removePillow() {
-      const state = this.state;
-      if (state.pillowEl) {
-        state.pillowEl.remove();
-        state.pillowEl = null;
+      this._updateTranslateBtn();
+      if (state.root.classList.contains('nr-catalog-open')) {
+        const search = state.root.querySelector('.nr-catalog-search');
+        this._renderCatalogList(search ? search.value : '');
       }
     },
 
-    /** 收起提示条：置于占位柱底部（绝对定位脱离文档流，增删不影响几何） */
-    _ensureCollapsedNote() {
+    /** 头部"译"按钮：off → replace → bilingual 循环 */
+    _cycleTranslate() {
+      const order = ['off', 'replace', 'bilingual'];
+      const cur = NR.settings.translateMode;
+      const next = order[(order.indexOf(cur) + 1) % order.length];
+      NR.saveSettings({ translateMode: next });
+      if (this.state && this.state.panelApi) this.state.panelApi.refresh();
+      const labels = { off: '翻译已关闭', replace: '翻译：替换原文', bilingual: '翻译：双语对照' };
+      NR.toast(labels[next], 1400);
+    },
+
+    _updateTranslateBtn() {
       const state = this.state;
-      if (state.collapsedCount <= 0) return;
-      if (!state.pillowEl) this._growPillow(0);
-      if (!state.collapsedNote) {
-        const note = document.createElement('div');
-        note.className = 'nr-collapsed';
-        state.pillowEl.appendChild(note);
-        state.collapsedNote = note;
-      }
-      state.collapsedNote.textContent = '已收起前 ' + state.collapsedCount + ' 章（按 ← 可翻回）';
+      const btn = state && state.root && state.root.querySelector('[data-act="translate"]');
+      if (!btn) return;
+      const on = NR.settings.translateMode !== 'off';
+      btn.classList.toggle('nr-accent', on);
+      const labels = { off: '关闭', replace: '替换原文', bilingual: '双语对照' };
+      btn.title = '翻译：' + (labels[NR.settings.translateMode] || '关闭') + '（点击循环 关闭→替换原文→双语对照）';
+    },
+
+    _appendChapter(chapter) {
+      // 记录入窗、裁剪与翻译触发都在章节窗口模块（见 ADR-0004）
+      return this.state.window.add(chapter);
+    },
+
+    /** 该章节记录是否还持有完整正文（收起后 data 置空，meta 仍保留） */
+    _hasFullData(c) {
+      return !!(c && c.data && c.data.paragraphs && c.data.paragraphs.length);
     },
 
     _renderTail() {
@@ -929,7 +1032,7 @@
       } else {
         tail.style.minHeight = '';
       }
-      const last = this._lastRendered();
+      const last = state.window.lastRendered();
       tail.textContent = '';
       if (state.appending) {
         const spin = document.createElement('span');
@@ -939,7 +1042,7 @@
         return;
       }
       if (!last) return;
-      if (!last.data.nextUrl) {
+      if (!last.meta.nextUrl) {
         tail.textContent = '· 已经读到最后一章啦 ·';
         return;
       }
@@ -950,7 +1053,7 @@
         btn.textContent = '重试';
         btn.addEventListener('click', () => {
           state.tailError = false;
-          this._appendByUrl(last.data.nextUrl, true);
+          this._appendByUrl(last.meta.nextUrl, true);
         });
         tail.appendChild(btn);
         return;
@@ -961,14 +1064,14 @@
         sep.textContent = '上滑继续阅读';
         tail.appendChild(sep);
         const hint = document.createElement('div');
-        hint.textContent = '（已预加载下一章：' + (last.data.title || '') + '）';
+        hint.textContent = '（已预加载下一章：' + (last.meta.title || '') + '）';
         tail.appendChild(hint);
         return;
       }
       const btn = document.createElement('button');
       btn.className = 'nr-btn';
       btn.textContent = '加载下一章 ↓';
-      btn.addEventListener('click', () => this._appendByUrl(last.data.nextUrl, true));
+      btn.addEventListener('click', () => this._appendByUrl(last.meta.nextUrl, true));
       tail.appendChild(btn);
     },
 
@@ -982,11 +1085,11 @@
     async _appendByUrl(url, scroll) {
       const state = this.state;
       if (!url) return -1;
-      const exist = state.chapters.find((c) => c.data.url === url);
-      if (exist) {
-        if (!exist.el) await this._rerenderCollapsed(url);
+      const existIdx = state.window.indexOf(url);
+      if (existIdx >= 0) {
+        if (!state.chapters[existIdx].el) await this._rerenderCollapsed(url);
         if (scroll) this._scrollToChapter(url);
-        return state.chapters.indexOf(exist);
+        return existIdx;
       }
       if (state.appendingUrl === url && state.appendingPromise) return state.appendingPromise;
       state.appending = true;
@@ -1018,67 +1121,23 @@
     },
 
     /**
-     * 恢复已收起的章节：只重建 DOM 并回填原记录的 el，不向 state.chapters 插入新记录
-     * （否则同 URL 记录被复制，回翻会反复命中空记录卡在同一章）。
-     * 正文已被裁剪成元数据时先按需重载。返回是否恢复成功。
+     * 恢复已收起章节：委托章节窗口模块按需重载/回填（见 ADR-0004）。
+     * 返回是否恢复成功；加载失败提示后停留原章。
      */
     async _rerenderCollapsed(url) {
-      const state = this.state;
-      const idx = state.chapters.findIndex((c) => c.data.url === url && !c.el);
-      if (idx < 0) return true; // 已恢复或不存在
-      if (!this._hasFullData(state.chapters[idx])) {
-        try {
-          const chapter = await NR.loader.getChapter(url);
-          if (!this._alive(state)) return false;
-          // 原记录里的导航元数据更贴近当次阅读链路，新解析缺失时回填保留
-          chapter.indexUrl = chapter.indexUrl || state.chapters[idx].data.indexUrl;
-          chapter.prevUrl = chapter.prevUrl || state.chapters[idx].data.prevUrl;
-          chapter.nextUrl = chapter.nextUrl || state.chapters[idx].data.nextUrl;
-          state.chapters[idx].data = chapter;
-        } catch (e) {
-          if (this._alive(state)) NR.toast('章节加载失败，请重试', 1600);
-          return false;
-        }
+      const st = this.state; // 捕获本次请求所属的会话：期间可能关闭并重开
+      try {
+        return await st.window.ensureRendered(url);
+      } catch (e) {
+        if (this._alive(st)) NR.toast('章节加载失败，请重试', 1600);
+        return false;
       }
-      const rec = state.chapters[idx];
-      if (rec.el) return true; // 并发恢复时后完成者直接复用先完成者插入的 DOM
-      const el = this._buildChapterEl(rec.data);
-      let refIdx = idx + 1;
-      while (refIdx < state.chapters.length && !state.chapters[refIdx].el) refIdx++;
-      const refNode = refIdx < state.chapters.length ? state.chapters[refIdx].el : null;
-      // 整个回填 + 随后的跳转按一次程序性导航处理：过程中任何布局变化引发的
-      // 滚动事件都不参与工具栏手势判定（scroll=true 路径随后由 _scrollToChapter 再次置位）
-      state.progScroll = true;
-      requestAnimationFrame(() => { state.progScroll = false; });
-      // 回填同样等高：占位柱按插入产生的实测流高度收缩，插入点下方内容零位移。
-      // 无下方锚点（插到末尾）时用 pages 容器高度差实测，不依赖具体外距数值。
-      // 同上用 rect（亚像素）防移动端取整偏差
-      const base = refNode ? refNode.getBoundingClientRect().top : state.pages.getBoundingClientRect().height;
-      if (refNode) state.pages.insertBefore(el, refNode);
-      else state.pages.appendChild(el);
-      rec.el = el;
-      const grown = refNode ? refNode.getBoundingClientRect().top - base : state.pages.getBoundingClientRect().height - base;
-      if (grown > 0) this._shrinkPillow(grown);
-      this._trimChapters();
-      if (state.collapsedCount > 0) state.collapsedCount--;
-      if (state.collapsedCount === 0) {
-        if (state.collapsedNote) {
-          state.collapsedNote.remove();
-          state.collapsedNote = null;
-        }
-        // 收起区已全部回填：移除占位柱（残余高度已被实测差值归零，误差仅数 px
-        // 且发生在跳转导航过程中，不可见）
-        this._removePillow();
-      } else {
-        this._ensureCollapsedNote();
-      }
-      return true;
     },
 
     _scrollToChapter(url) {
       const state = this.state;
-      const idx = state.chapters.findIndex((c) => c.data.url === url && c.el);
-      if (idx < 0) return;
+      const idx = state.window.indexOf(url);
+      if (idx < 0 || !state.chapters[idx].el) return;
       const el = state.chapters[idx].el;
       requestAnimationFrame(() => {
         if (!this._alive(state)) return;
@@ -1104,14 +1163,14 @@
       if (!cur) return;
       const next = state.chapters[state.currentIndex + 1];
       if (next && next.el) {
-        this._scrollToChapter(next.data.url);
+        this._scrollToChapter(next.meta.url);
         return;
       }
-      if (!cur.data.nextUrl) {
+      if (!cur.meta.nextUrl) {
         NR.toast('已经是最后一章了', 1400);
         return;
       }
-      await this._appendByUrl(cur.data.nextUrl, true);
+      await this._appendByUrl(cur.meta.nextUrl, true);
     },
 
     goPrev() {
@@ -1121,19 +1180,20 @@
         const prev = state.chapters[curIdx - 1];
         if (!prev.el) {
           // 章节可能已被裁剪正文，需要按需重载（异步）；失败提示后停留原章
-          this._rerenderCollapsed(prev.data.url)
+          this._rerenderCollapsed(prev.meta.url)
             .then((ok) => {
-              if (ok && this._alive(state)) this._scrollToChapter(prev.data.url);
+              if (ok && this._alive(state)) this._scrollToChapter(prev.meta.url);
             })
             .catch(() => {});
           return;
         }
-        this._scrollToChapter(prev.data.url);
+        this._scrollToChapter(prev.meta.url);
         return;
       }
-      const prevUrl = state.chapters[0] && state.chapters[0].data.prevUrl;
+      const prevUrl = state.chapters[0] && state.chapters[0].meta.prevUrl;
       if (prevUrl) {
         this._saveProgressNow();
+        this._allowNavOnce(); // 同 _jumpTo：阅读器主动翻章需守卫放行
         NR.toast('正在返回上一章…', 1000);
         const go = () => setTimeout(() => location.assign(prevUrl), 200);
         try {
@@ -1158,13 +1218,9 @@
       const total = scroller.scrollHeight - scroller.clientHeight;
       state.progressBar.style.width = (total > 0 ? Math.min(100, (st / total) * 100) : 0) + '%';
 
-      // 当前章节判定：过 40% 视线线的最后一章
+      // 当前章节判定：过 40% 视线线的最后一章（遍历在章节窗口模块内）
       const midline = st + scroller.clientHeight * 0.4;
-      let idx = 0;
-      for (let i = 0; i < state.chapters.length; i++) {
-        const c = state.chapters[i];
-        if (c.el && c.el.offsetTop <= midline) idx = i;
-      }
+      const idx = state.window.currentIndexAt(midline);
       if (idx !== state.currentIndex) {
         state.currentIndex = idx;
         this._onCurrentChanged();
@@ -1181,9 +1237,9 @@
       // 距底阈值：自动拼接 / 预取
       const remaining = scroller.scrollHeight - st - scroller.clientHeight;
       if (remaining < APPEND_THRESHOLD_PX) {
-        const last = this._lastRendered();
-        if (last && last.data.nextUrl && NR.settings.autoAppend && !state.appending && !state.tailError) {
-          this._appendByUrl(last.data.nextUrl, false);
+        const last = state.window.lastRendered();
+        if (last && last.meta.nextUrl && NR.settings.autoAppend && !state.appending && !state.tailError) {
+          this._appendByUrl(last.meta.nextUrl, false);
         }
       }
       const now = Date.now();
@@ -1199,12 +1255,12 @@
       const state = this.state;
       const cur = state.chapters[state.currentIndex];
       if (!cur) return;
-      state.headerChapter.textContent = cur.data.title || '';
-      if (cur.data.bookTitle) state.headerBook.textContent = cur.data.bookTitle;
-      if (cur.data.url && cur.data.url !== location.href) {
+      state.headerChapter.textContent = NR.ccConvert(cur.meta.title || '', NR.settings.textConvert);
+      if (cur.meta.bookTitle) state.headerBook.textContent = NR.ccConvert(cur.meta.bookTitle, NR.settings.textConvert);
+      if (cur.meta.url && cur.meta.url !== location.href) {
         try {
           // 地址栏只做展示跟随：替换当前条目而非压栈，跨章往返不污染浏览器历史
-          history.replaceState(null, '', cur.data.url);
+          history.replaceState(null, '', cur.meta.url);
         } catch (e) {
           /* 忽略 */
         }
@@ -1247,17 +1303,62 @@
     _startPrefetch() {
       if (!NR.settings.preload) return;
       const state = this.state;
-      const last = this._lastRendered();
-      if (last) NR.loader.prefetchFrom(last.data.url, PREFETCH_DEPTH).catch(() => {});
+      const last = state.window.lastRendered();
+      if (last) NR.loader.prefetchFrom(last.meta.url, PREFETCH_DEPTH).catch(() => {});
     },
 
-    onSettingChanged(patch) {
-      if (patch && Object.prototype.hasOwnProperty.call(patch, 'blockAdsOnRead')) {
-        this._syncDnr(!!patch.blockAdsOnRead);
+    /**
+     * 把当前设置应用到阅读视图 DOM。设置模块只广播变更，应用归 reader 自己
+     * （原先 settings-panel 反向读 reader 内部，见评审报告）。
+     */
+    _applySettings() {
+      const state = this.state;
+      if (!state || !this.isOpen || !this.rootEl) return;
+      const s = NR.settings;
+      const theme = NR.THEMES[s.theme] || NR.THEMES.light;
+      const root = this.rootEl;
+      root.dataset.theme = s.theme;
+      root.style.setProperty('--nr-fs', s.fontSize + 'px');
+      root.style.setProperty('--nr-lh', String(s.lineHeight));
+      root.style.setProperty('--nr-ff', NR.FONT_STACKS[s.fontFamily] || NR.FONT_STACKS.system);
+      root.style.setProperty('--nr-width', s.fullWidth ? 'calc(100% - 48px)' : 'min(' + s.widthPercent + '%, calc(100% - 48px))');
+      root.style.setProperty('--nr-bg', theme.bg);
+      root.style.setProperty('--nr-fg', theme.fg);
+      root.style.setProperty('--nr-muted', theme.muted);
+      root.style.setProperty('--nr-line', theme.line);
+      root.style.setProperty('--nr-accent', theme.accent);
+      root.style.setProperty('--nr-panel', theme.panel);
+      root.classList.toggle('nr-indent', !!s.indent);
+      root.classList.toggle('nr-img-hidden', !!s.noImages);
+
+      // 文本偏好（简繁/翻译）变更检测：面板改动与 storage.sync 热更新都汇聚到这里；
+      // 有变化时通知阅读器就地重排文本（不重抓章节）
+      const prefs = [s.textConvert, s.translateMode, s.translateSource, s.translateTarget].join('|');
+      if (state.appliedTextPrefs == null) {
+        state.appliedTextPrefs = prefs; // 阅读器刚打开：首章已按当前设置渲染
+      } else if (state.appliedTextPrefs !== prefs) {
+        state.appliedTextPrefs = prefs;
+        this._onTextPrefsChanged();
+      }
+      // 导航锁定开关：同步给主世界守卫（跨世界只通 DOM 属性）
+      this.updateNavLockAttr();
+
+      // 网络层防护开关：面板改动与 storage.sync 跨设备热更新都汇聚到这里，
+      // 首帧只记基线（_doOpen 已按当前值同步过），避免同一入口下发两次
+      const dnr = !!s.blockAdsOnRead;
+      if (state.appliedDnr == null) state.appliedDnr = dnr;
+      else if (state.appliedDnr !== dnr) {
+        state.appliedDnr = dnr;
+        this._syncDnr(dnr);
       }
     },
 
-    // ---------------- 广告拦截（会话级 DNR，仅本站生效） ----------------
+    /** 兼容旧调用点（settings-panel 直接回调）：设置的唯一应用入口是 _applySettings */
+    onSettingChanged() {
+      this._applySettings();
+    },
+
+    // ---------------- 网络层防护（会话级 DNR 白名单，仅本站生效） ----------------
 
     _syncDnr(enable) {
       if (!NR.extAlive()) return;
@@ -1274,7 +1375,7 @@
 
     _bookKey() {
       const state = this.state;
-      const first = state.chapters[0] && state.chapters[0].data;
+      const first = state.chapters[0] && state.chapters[0].meta;
       if (first && first.indexUrl) return first.indexUrl;
       try {
         const u = new URL(state.originalUrl);
@@ -1313,53 +1414,14 @@
         chapterRatio = Math.max(0, Math.min(1, (scroller.scrollTop - top) / span));
       }
       const record = {
-        url: cur.data.url || state.originalUrl,
+        url: cur.meta.url || state.originalUrl,
         chapterRatio,
-        chapterTitle: cur.data.title || '',
-        bookTitle: (cur.data.bookTitle || '').trim(),
+        chapterTitle: cur.meta.title || '',
+        bookTitle: (cur.meta.bookTitle || '').trim(),
         ts: Date.now()
       };
-      const key = this._bookKey();
-      // 同一内容脚本内的写入串行化：保证本页 ts 单调、get→set 不自交错
-      this._progressChain = (this._progressChain || Promise.resolve())
-        .then(() => this._writeProgressRecord(key, record))
-        .catch(() => {});
-    },
-
-    /**
-     * 每本书独立 storage key（p:<书键>）。旧版整包 progress 是"读全量—改一条—写全量"，
-     * 两个标签页同时保存会互相覆盖对方的新记录；拆 key 后各写各的书，天然无冲突。
-     * 首次写入时把旧版整包数据迁移为独立 key（幂等，多标签页并发迁移结果一致）。
-     */
-    async _writeProgressRecord(bookKey, record) {
-      const store = await chrome.storage.local.get(['progress', 'p:' + bookKey]);
-      const legacy = store.progress;
-      const setOps = {};
-      if (legacy && typeof legacy === 'object') {
-        for (const k of Object.keys(legacy)) {
-          const v = legacy[k];
-          if (v && v.url) setOps['p:' + k] = v;
-        }
-      }
-      setOps['p:' + bookKey] = record;
-      await chrome.storage.local.set(setOps);
-      if (legacy) await chrome.storage.local.remove('progress');
-      this._evictProgressBooks();
-    },
-
-    /** 超过 200 本时淘汰最久未读（节流执行，避免每次保存全量扫描） */
-    async _evictProgressBooks() {
-      const now = Date.now();
-      if (this._lastEvictAt && now - this._lastEvictAt < 30000) return;
-      this._lastEvictAt = now;
-      const all = await chrome.storage.local.get(null);
-      const entries = [];
-      for (const k of Object.keys(all)) {
-        if (k.indexOf('p:') === 0 && all[k] && all[k].url) entries.push([k, all[k]]);
-      }
-      if (entries.length <= 200) return;
-      entries.sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0));
-      await chrome.storage.local.remove(entries.slice(0, entries.length - 200).map((e) => e[0]));
+      // 写入串行化、旧格式迁移、200 本淘汰都在 NR.progress 内部（见 ADR-0001）
+      NR.progress.put(this._bookKey(), record);
     },
 
     /** 扩展上下文失效提示（每次阅读会话只提示一次） */
@@ -1370,64 +1432,45 @@
       NR.toast('扩展已重新加载，进度保存已暂停；刷新本页后恢复', 3600);
     },
 
-    _restoreProgress() {
+    /**
+     * 恢复阅读进度：查询委托 NR.progress（键方案、旧版整包、目录归并都在模块内，见 ADR-0001）。
+     */
+    async _restoreProgress() {
       const state = this.state;
-      const key = this._bookKey();
-      // 扩展上下文已失效（扩展被刷新/更新）：storage 调用会同步抛
-      // "Extension context invalidated"（末尾 .catch 拦不住同步 throw），
-      // 跳过进度恢复即可，阅读模式照常进入
+      // 扩展上下文已失效（扩展被刷新/更新）：storage 调用会抛
+      // "Extension context invalidated"，跳过进度恢复即可，阅读模式照常进入
       if (!NR.extAlive()) return;
+      let record = null;
       try {
-        chrome.storage.local
-          .get(['p:' + key, 'progress'])
-          .then(async (store) => {
-            if (!this._alive(state)) return;
-            // 分书籍：先精确命中书键（新格式独立 key / 旧版整包），未命中按章节 URL
-            // 目录归并（防目录识别漂移导致同书分裂）
-            let record = store['p:' + key];
-            if (!record && store.progress) record = NR.findBookRecord(store.progress, key, state.originalUrl);
-            if (!record) {
-              // 新格式精确未命中：扫描全部 p:*（书键漂移时按章节 URL 归并）
-              const all = await chrome.storage.local.get(null).catch(() => null);
-              if (!this._alive(state)) return;
-              if (all) {
-                const map = {};
-                for (const k of Object.keys(all)) {
-                  if (k.indexOf('p:') === 0 && all[k] && all[k].url) map[k.slice(2)] = all[k];
-                }
-                record = NR.findBookRecord(map, key, state.originalUrl);
-              }
-            }
-            if (!record) return;
-            if (record.url === state.originalUrl) {
-              // 打开的就是上次读到的章节：续读落地时按章内比例精确恢复；主动跳转则从头开始
-              if (state.landingIntent === 'jump') return;
-              const ratio = typeof record.chapterRatio === 'number' ? record.chapterRatio : null;
-              if (ratio == null) return;
-              state.restoredRatio = ratio;
-              requestAnimationFrame(() => {
-                if (!this._alive(state)) return;
-                const cur = state.chapters[state.currentIndex];
-                const scroller = state.scroller;
-                if (cur && cur.el) {
-                  const span = Math.max(1, cur.el.offsetHeight - scroller.clientHeight);
-                  const top = cur.el.offsetTop + ratio * span;
-                  // 程序性滚动置标记：恢复位置距当前 scrollTop 可能很大，避免被
-                  // 手势判定误读（同 _scrollToChapter）
-                  state.progScroll = true;
-                  state.lastScrollTop = top;
-                  scroller.scrollTop = top;
-                  requestAnimationFrame(() => { state.progScroll = false; });
-                }
-              });
-            } else if (record.url && !state.landingIntent) {
-              // 从同书其他章节自然进入（悬浮按钮/快捷键）才提示续读；主动跳转不提示
-              this._showResumeChip(record);
-            }
-          })
-          .catch(() => {});
+        record = await NR.progress.get(this._bookKey(), state.originalUrl);
       } catch (e) {
-        /* extAlive 检查与实际调用之间上下文失效的竞态：同样跳过恢复 */
+        return; // extAlive 检查与实际调用之间上下文失效的竞态：同样跳过恢复
+      }
+      if (!this._alive(state) || !record) return;
+      if (record.url === state.originalUrl) {
+        // 打开的就是上次读到的章节：续读落地时按章内比例精确恢复；主动跳转则从头开始
+        if (state.landingIntent === 'jump') return;
+        const ratio = typeof record.chapterRatio === 'number' ? record.chapterRatio : null;
+        if (ratio == null) return;
+        state.restoredRatio = ratio;
+        requestAnimationFrame(() => {
+          if (!this._alive(state)) return;
+          const cur = state.chapters[state.currentIndex];
+          const scroller = state.scroller;
+          if (cur && cur.el) {
+            const span = Math.max(1, cur.el.offsetHeight - scroller.clientHeight);
+            const top = cur.el.offsetTop + ratio * span;
+            // 程序性滚动置标记：恢复位置距当前 scrollTop 可能很大，避免被
+            // 手势判定误读（同 _scrollToChapter）
+            state.progScroll = true;
+            state.lastScrollTop = top;
+            scroller.scrollTop = top;
+            requestAnimationFrame(() => { state.progScroll = false; });
+          }
+        });
+      } else if (record.url && !state.landingIntent) {
+        // 从同书其他章节自然进入（悬浮按钮/快捷键）才提示续读；主动跳转不提示
+        this._showResumeChip(record);
       }
     },
 
@@ -1439,7 +1482,7 @@
       const chip = document.createElement('div');
       chip.className = 'nr-resume';
       const text = document.createElement('span');
-      text.textContent = '📖 上次读到《' + (record.chapterTitle || '更早的章节') + '》';
+      text.textContent = '📖 上次读到《' + NR.ccConvert(record.chapterTitle || '更早的章节', NR.settings.textConvert) + '》';
       const go = document.createElement('button');
       go.className = 'nr-resume-go';
       go.textContent = '继续阅读 ›';

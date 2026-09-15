@@ -18,3 +18,11 @@
 - 许可证：Apache License 2.0 或 Mozilla Public License 2.0（双重许可，本项目按 Apache-2.0 使用）
   https://www.apache.org/licenses/LICENSE-2.0
   https://www.mozilla.org/media/MPL/2.0/index.txt
+
+## 3. OpenCC 词典数据
+
+- 来源：https://github.com/BYVoid/OpenCC（data/dictionary 下的 STCharacters/TSCharacters/STPhrases/TSPhrases）
+- 文件：`src/lib/chinese-convert.js`（由 `tools/gen_cc.py` 生成：单字取第一候选做 1:1 映射，词组仅保留逐字转换会出错的消歧条目，另对少量异体字输出做了正体化校正）
+- 版权：Copyright (c) BYVoid <byvoid@byvoid.com>
+- 许可证：Apache License 2.0
+  https://www.apache.org/licenses/LICENSE-2.0

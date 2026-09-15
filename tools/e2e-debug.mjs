@@ -1,25 +1,14 @@
 #!/usr/bin/env node
 /** 调试：连接启动自带的 about:blank 标签页 → 再导航 → 捕获内容脚本全部事件 */
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { sleep, launchChrome, waitForDevtools } from './harness.mjs';
 
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const EXT = resolve(process.argv[2] || '/tmp/nr-ext-test');
 const URL = process.argv[3] || 'http://127.0.0.1:8080/utf8site/1.html';
 const PORT = 9339;
 const PROFILE = '/tmp/nr-e2e-debug-profile';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-rmSync(PROFILE, { recursive: true, force: true });
-const proc = spawn(CHROME, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`, 'about:blank'
-], { stdio: 'ignore' });
+const proc = launchChrome({ port: PORT, profile: PROFILE, ext: EXT });
 setTimeout(() => { try { proc.kill('SIGKILL'); } catch (e) {} process.exit(2); }, 45000).unref();
 
 const fetchJson = async (u, opts) => {
@@ -40,20 +29,12 @@ const wsUrlOf = async () => {
 };
 
 try {
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetchJson(`http://127.0.0.1:${PORT}/json/version`);
-      break;
-    } catch (e) {
-      /* retry */
-    }
-    await sleep(200);
-  }
+  await waitForDevtools(PORT);
   const ws = new WebSocket(await wsUrlOf());
   await Promise.race([
     new Promise((res, rej) => {
       ws.addEventListener('open', res);
-      ws.addEventListener('error', () => rej(new Error('ws error')));
+      ws.addEventListener('error', () => rej(new Error('ws error（CDP 连接失败：确认 Chrome 能在当前环境启动；渲染进程崩溃也会报此错）')));
     }),
     sleep(5000).then(() => Promise.reject(new Error('ws connect timeout')))
   ]);

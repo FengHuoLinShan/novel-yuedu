@@ -46,27 +46,6 @@
     }
   };
 
-  /**
-   * 按书查找进度记录（分书籍兜底匹配）：
-   * 1) 精确命中书键（目录页 URL）；
-   * 2) 书键不一致时（部分页面识别不到目录链接导致键漂移），退而按章节 URL 的目录归并同一本书，
-   *    取时间最新的一条，避免同一本书分裂出多条记录。
-   */
-  NR.findBookRecord = function (progress, bookKey, pageUrl) {
-    if (!progress) return null;
-    if (bookKey && progress[bookKey]) return progress[bookKey];
-    const dir = NR.dirnameOf(pageUrl);
-    if (!dir) return null;
-    let best = null;
-    for (const k in progress) {
-      const r = progress[k];
-      if (r && r.url && NR.dirnameOf(r.url) === dir && (!best || (r.ts || 0) > (best.ts || 0))) {
-        best = r;
-      }
-    }
-    return best;
-  };
-
   // 压缩所有空白后的小写文本，用于标题/行去重比较
   NR.normText = function (text) {
     return String(text || '').replace(/\s+/g, '').toLowerCase();

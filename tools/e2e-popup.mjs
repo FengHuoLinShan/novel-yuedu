@@ -23,113 +23,10 @@
  *
  * 运行：python3 -m http.server -d test/fixtures 8080 & 然后 node tools/e2e-popup.mjs <项目根目录>
  */
-import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
-
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
-const BASE = process.env.NR_TEST_BASE || 'http://127.0.0.1:8080';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let passed = 0;
-let failed = 0;
-function check(name, cond, extra) {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (cond ? '' : '  → ' + extra));
-  cond ? passed++ : failed++;
-}
-
-// ---------------- CDP 客户端（与 e2e-catalog.mjs 同构） ----------------
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.events = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve: res, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : res(msg.result);
-      } else {
-        this.events.push(msg);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res);
-      ws.addEventListener('error', rej);
-    });
-    return new CDP(ws);
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    this.ws.send(JSON.stringify(msg));
-    return new Promise((res, rej) => {
-      this.pending.set(id, { resolve: res, reject: rej });
-      // 目标页被 window.close 关掉后 WS 静默死亡，未决消息不得无限挂起
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          rej(new Error('CDP 请求超时: ' + method));
-        }
-      }, 20000).unref();
-    });
-  }
-  exceptions() {
-    return this.events.filter((e) => e.method === 'Runtime.exceptionThrown').length;
-  }
-  isolatedContextId() {
-    let found = null;
-    for (const e of this.events) {
-      if (e.method === 'Runtime.executionContextCreated') {
-        const c = e.params.context;
-        if (c.name && c.name.indexOf('小说悦读') >= 0) found = c.id;
-      }
-    }
-    return found;
-  }
-}
-
-async function evalJs(cdp, expression, contextId) {
-  const params = { expression, returnByValue: true, awaitPromise: true };
-  if (contextId != null) params.contextId = contextId;
-  const r = await cdp.send('Runtime.evaluate', params);
-  if (r.exceptionDetails) throw new Error(expression.slice(0, 80) + ' => ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
-}
-
-async function until(cdp, expression, timeout = 10000, interval = 150, contextId) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    let v = null;
-    try { v = await evalJs(cdp, expression, contextId); } catch (e) { /* 导航瞬间上下文销毁，继续等 */ }
-    if (v) return true;
-    if (Date.now() > deadline) throw new Error('timeout: ' + expression.slice(0, 80));
-    await sleep(interval);
-  }
-}
+import { BASE, sleep, check, fail, summary, CDP, launchChrome, evalJs, until } from './harness.mjs';
 
 const procs = [];
-function launchChrome(port, profile, windowSize) {
-  rmSync(profile, { recursive: true, force: true });
-  const proc = spawn(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    `--user-data-dir=${profile}`,
-    `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-    `--window-size=${windowSize}`,
-    `--remote-debugging-port=${port}`, 'about:blank'
-  ], { stdio: 'ignore' });
-  procs.push(proc);
-  return proc;
-}
 const watchdog = setTimeout(() => {
   console.error('⏱ 超时退出');
   for (const p of procs) { try { p.kill('SIGKILL'); } catch (e) { /* 已退出 */ } }
@@ -152,7 +49,7 @@ async function openTab(port, url) {
 // ---------------- 场景一：桌面 1000×900，加载/渲染/确定性收起 ----------------
 async function runDesktop() {
   console.log('\n[桌面 1000×900] popup 加载、渲染与确定性收起');
-  launchChrome(9350, '/tmp/nr-popup-profile', '1000,900');
+  procs.push(launchChrome({ port: 9350, profile: '/tmp/nr-popup-profile', windowSize: '1000,900' }));
   // 先开小说页拿扩展 ID（unpacked ID 由扩展绝对路径派生，跨实例稳定）
   const page = await openTab(9350, `${BASE}/longsite/1.html`);
   await sleep(1800); // document_idle 注入内容脚本
@@ -245,7 +142,7 @@ async function runDesktop() {
 // ---------------- 场景二：手机面板视口 260×700，尺寸自适应 + 粗指针分支 ----------------
 async function runMobilePanel() {
   console.log('\n[手机面板视口 260×700] 尺寸自适应与触控热区');
-  launchChrome(9351, '/tmp/nr-popup-narrow', '800,600');
+  procs.push(launchChrome({ port: 9351, profile: '/tmp/nr-popup-narrow', windowSize: '800,600' }));
   const page = await openTab(9351, `${BASE}/longsite/1.html`);
   await sleep(1800);
   const ctx = page.cdp.isolatedContextId();
@@ -297,7 +194,7 @@ try {
   await runDesktop();
   await runMobilePanel();
 } catch (e) {
-  failed++;
+  fail();
   console.error('  ✗ 测试执行异常：', e.message);
 }
 
@@ -307,5 +204,4 @@ await sleep(500);
 for (const dir of ['/tmp/nr-popup-profile', '/tmp/nr-popup-narrow']) {
   try { rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 可忽略 */ }
 }
-console.log(`\n结果：${passed} 通过，${failed} 失败`);
-process.exit(failed ? 1 : 0);
+process.exit(summary() ? 1 : 0);

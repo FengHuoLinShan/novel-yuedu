@@ -3,14 +3,9 @@
  * 真实站点端到端测试：等待 Cloudflare 盾通过 → 悬浮按钮 → 阅读模式 → 提取/翻章预载验证。
  * 运行：node tools/e2e-real.mjs <扩展目录> <页面URL> [--headed]
  */
-import { spawn } from 'node:child_process';
-import { writeFileSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { sleep, check, fail, summary, CDP, launchChrome, evalJs } from './harness.mjs';
 
-const CHROME =
-  process.env.NR_TEST_BROWSER ||
-  '/Users/tywww/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
-const EXT = resolve(process.argv[2] || '.');
 const URL = process.argv[3];
 if (!URL) {
   console.error('用法：node tools/e2e-real.mjs <扩展目录> <章节页URL> [--headed]');
@@ -20,60 +15,12 @@ const HEADED = process.argv.includes('--headed');
 const PORT = 9342;
 const PROFILE = '/tmp/nr-real-profile';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let passed = 0;
-let failed = 0;
-const check = (name, cond, extra) => {
-  console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra !== undefined && extra !== null ? `  [${extra}]` : ''));
-  cond ? passed++ : failed++;
-};
-
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result);
-      }
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await Promise.race([
-      new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', () => rej(new Error('ws error'))); }),
-      sleep(5000).then(() => Promise.reject(new Error('ws connect timeout')))
-    ]);
-    return new CDP(ws);
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-}
-
-const evalJs = async (cdp, expression) => {
-  const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description?.slice(0, 300) || 'eval error');
-  return r.result.value;
-};
-
-rmSync(PROFILE, { recursive: true, force: true });
-const args = [
-  '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--user-data-dir=${PROFILE}`,
-  `--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-  `--remote-debugging-port=${PORT}`,
-  '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-  'about:blank'
-];
-if (!HEADED) args.unshift('--headless=new');
-const proc = spawn(CHROME, args, { stdio: 'ignore' });
+const proc = launchChrome({
+  port: PORT,
+  profile: PROFILE,
+  headed: HEADED,
+  userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+});
 const watchdog = setTimeout(() => { console.error('⏱ 总超时'); try { proc.kill('SIGKILL'); } catch (e) {} process.exit(2); }, 180000);
 
 try {
@@ -176,11 +123,10 @@ try {
     check('Esc 退出并还原原页面', closed);
   }
 } catch (e) {
-  failed++;
+  fail();
   console.error('异常：', e.message);
 } finally {
   clearTimeout(watchdog);
   try { proc.kill('SIGKILL'); } catch (e) { /* noop */ }
 }
-console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
-process.exit(failed ? 1 : 0);
+process.exit(summary() ? 1 : 0);

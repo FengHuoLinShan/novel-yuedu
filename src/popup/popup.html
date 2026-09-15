@@ -27,10 +27,6 @@
         <input type="checkbox" id="floatingButton" />
       </label>
       <label class="row">
-        <span>全局拦截广告域名</span>
-        <input type="checkbox" id="globalAdBlock" />
-      </label>
-      <label class="row">
         <span>在此站点启用</span>
         <input type="checkbox" id="siteEnabled" />
       </label>
@@ -42,6 +38,11 @@
       阅读时仅放行本站网络请求，其余（广告脚本、弹窗、跨站跳转）一律拦截；重排页面天然去除广告与图片。
     </div>
   </div>
+  <script src="../content/storage.js"></script>
+  <script src="../content/detector.js"></script>
+  <script src="../content/progress.js"></script>
+  <script src="../content/intent.js"></script>
+  <script src="../content/sites.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

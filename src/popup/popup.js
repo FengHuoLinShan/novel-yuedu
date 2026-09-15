@@ -1,5 +1,5 @@
 /**
- * popup.js — 工具栏弹窗：进入阅读模式、悬浮按钮开关、全局广告拦截、站点启停
+ * popup.js — 工具栏弹窗：进入阅读模式、悬浮按钮开关、站点启停
  */
 (function () {
   'use strict';
@@ -21,26 +21,14 @@
   }
 
   /**
-   * 最近阅读列表：每本书独立 storage key（p:<书键>），按时间倒序取前 8 条；
-   * 兼容读取旧版整包 progress。点击写 po:<目标URL> 跳转标记后开新标签，
-   * 落地自动进阅读模式（多标签页并发续读互不覆盖）。
+   * 最近阅读列表：数据来自 NR.progress.recent(8)（每本书独立 key，按时间倒序）。
+   * 点击声明 resume 跳转意图后开新标签，落地自动进阅读模式并恢复位置。
    */
   async function loadRecent() {
     const listEl = $('recentList');
     let records = [];
     try {
-      const all = await chrome.storage.local.get(null);
-      const map = {};
-      for (const k of Object.keys(all)) {
-        if (k.indexOf('p:') === 0 && all[k] && all[k].url) map[k.slice(2)] = all[k];
-      }
-      const legacy = all.progress || {};
-      for (const k of Object.keys(legacy)) {
-        if (legacy[k] && legacy[k].url && !map[k]) map[k] = legacy[k];
-      }
-      records = Object.values(map)
-        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
-        .slice(0, 8);
+      records = await NR.progress.recent(8);
     } catch (e) {
       /* fallthrough */
     }
@@ -77,10 +65,8 @@
       item.appendChild(go);
       item.addEventListener('click', async () => {
         try {
-          // resume 意图：落地后恢复到上次读到的章内位置（每目标 URL 独立 key）
-          await chrome.storage.local.set({
-            ['po:' + r.url.split('#')[0]]: { url: r.url, ts: Date.now(), intent: 'resume' }
-          });
+          // resume 意图：落地后恢复到上次读到的章内位置
+          await NR.intent.declare(r.url, 'resume');
         } catch (e) {
           /* 标记失败也能打开，只是不自动进阅读模式 */
         }
@@ -115,13 +101,6 @@
       /* 查询失败保留默认 Alt+R 文案 */
     }
 
-    // 全局广告域名拦截（静态规则集开关）
-    try {
-      const enabled = await chrome.declarativeNetRequest.getEnabledRulesets();
-      $('globalAdBlock').checked = enabled.includes('ad_domains');
-    } catch (e) {
-      $('globalAdBlock').disabled = true;
-    }
 
     // 当前页面信息（内容脚本可能不存在于 chrome:// 等页面）
     if (currentTab && currentTab.id != null) {
@@ -207,17 +186,6 @@
       });
     });
 
-    $('globalAdBlock').addEventListener('change', async (e) => {
-      const enable = e.target.checked;
-      try {
-        await chrome.declarativeNetRequest.updateEnabledRulesets(
-          enable ? { enableRulesetIds: ['ad_domains'] } : { disableRulesetIds: ['ad_domains'] }
-        );
-      } catch (err) {
-        e.target.checked = !enable;
-      }
-    });
-
     $('siteEnabled').addEventListener('change', async (e) => {
       const enable = e.target.checked;
       const host = pageInfo && pageInfo.host;
@@ -225,14 +193,7 @@
         e.target.checked = !enable;
         return;
       }
-      const { blacklist } = await chrome.storage.local.get('blacklist');
-      let list = Array.isArray(blacklist) ? blacklist.slice() : [];
-      if (enable) {
-        list = list.filter((h) => h !== host && !host.endsWith('.' + h));
-      } else if (!list.includes(host)) {
-        list.push(host);
-      }
-      await chrome.storage.local.set({ blacklist: list });
+      await NR.sites.setEnabled(host, enable);
     });
   }
 
