@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """打包扩展为可上传/侧载的 zip 与 crx（仅运行时文件，排除 test/tools/README）。
 
-产出三个包：
+产出四个包：
   dist/novel-reader-v<版本>.zip          —— Chrome / Edge / Android Chromium（Kiwi、Edge Canary）
   dist/novel-reader-v<版本>-firefox.zip  —— Firefox 桌面与 Android（注入 background.scripts 事件页字段，
                                             该字段会让 Chrome 报 manifest 警告，故从主包剥离）
+  dist/novel-yuedu-v<版本>.xpi           —— 与 firefox.zip 同内容，AMO 提交/自签用的规范扩展名
   dist/novel-yuedu-v<版本>.crx           —— CRX3 签名包，安卓 Kiwi / Edge Canary 侧载用
 
 CRX 签名私钥不放在项目目录内（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密）：
@@ -19,6 +20,7 @@ import os
 import struct
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -77,7 +79,12 @@ def build(out_name, manifest_obj):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for f, arc in iter_files():
             if f == manifest_path:
-                z.writestr("manifest.json", json.dumps(manifest_obj, ensure_ascii=False, indent=2))
+                # manifest 是改写后的内容（Firefox 变体不同），不能直接 z.write；但时间戳必须
+                # 取自源文件而非当前时刻，否则每次打包容器字节都变、同一源码产出不同校验和。
+                zi = zipfile.ZipInfo("manifest.json", time.localtime(manifest_path.stat().st_mtime)[:6])
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                zi.external_attr = 0o644 << 16
+                z.writestr(zi, json.dumps(manifest_obj, ensure_ascii=False, indent=2))
             else:
                 z.write(f, arc)
     print(f"{out.relative_to(ROOT)}  {out.stat().st_size} bytes（{out.stat().st_size / 1024:.1f} KB）")
@@ -93,6 +100,9 @@ ff_manifest["background"] = {
     "scripts": ["src/background/service-worker.js"],
 }
 build(f"novel-reader-v{version}-firefox.zip", ff_manifest)
+
+# AMO 提交用：与 firefox 包同内容，仅扩展名换成规范的 .xpi（Firefox 加载/自签都认它）
+build(f"novel-yuedu-v{version}.xpi", ff_manifest)
 
 
 # ---------------- CRX3（安卓侧载） ----------------
@@ -233,4 +243,4 @@ def verify_crx(path: Path):
 
 ext_id = build_crx(chrome_zip)
 verify_crx(dist / f"novel-yuedu-v{version}.crx")
-print(f"完成：Chrome 主包 + Firefox 变体包 + 安卓侧载 CRX3（自校验通过，扩展 ID {ext_id}）")
+print(f"完成：Chrome 主包 + Firefox 变体包 + AMO 提交 XPI + 安卓侧载 CRX3（自校验通过，扩展 ID {ext_id}）")

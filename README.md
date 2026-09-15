@@ -4,7 +4,7 @@
 
 Manifest V3 · 原生 JavaScript · 零构建依赖 · 兼容 Android（Edge / Lemur / Firefox）
 
-> 版本：0.2.13 · 安装包见 [Releases](../../releases)
+> 版本：0.2.14 · 安装包见 [Releases](../../releases)
 
 ---
 
@@ -55,7 +55,7 @@ Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展
 
 - **Microsoft Edge（安卓）**：从 [Releases](../../releases) 下载 `novel-yuedu-v*.crx`，在 Edge 隐藏的「开发人员选项」里以 `Extension Install by CRX` 安装，步骤见下
 - **Lemur / 狐猴浏览器**：支持商店扩展与本地 `.crx` 侧载，操作类似（Kiwi Browser 已于 2025 年初停止维护并从 Play 下架，不建议再作为宿主）
-- **Firefox for Android**：manifest 已含 gecko 兼容字段（事件页 background + 扩展 ID）；正式安装需经 addons.mozilla.org 签名，开发者可用 `about:debugging` 临时加载
+- **Firefox for Android**：manifest 已含 gecko 兼容字段（事件页 background + 扩展 ID）；Firefox 强制要求扩展经 AMO 签名，**未签名的包在手机上装不了**（没有「从文件安装扩展」入口），正式安装需先提交 addons.mozilla.org 签名，开发者可先用 `about:debugging` 临时加载。提交所需的上架文案、权限说明与数据声明见 [docs/amo-submission.md](docs/amo-submission.md)
 - 触屏下：悬浮按钮点击进入，双击暂停，`Aa` 面板与目录面板均为全高侧滑设计
 
 ### Edge（安卓）侧载 crx：三步安装
@@ -79,10 +79,10 @@ Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展
 ## 打包
 
 ```bash
-python3 tools/package.py   # 产出 Chrome 主包 zip / Firefox zip / Android 侧载 CRX3，并自校验签名
+python3 tools/package.py   # 产出 Chrome 主包 zip / Firefox zip / AMO 提交 XPI / Android 侧载 CRX3，并自校验签名
 ```
 
-zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件；CRX3 由脚本用发布私钥直接签名，产出 `dist/novel-yuedu-v<版本>.crx` 一并作为 Release 附件。`dist/` 与私钥均不纳入版本库，且**私钥绝不放在项目目录内**（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密），查找顺序：环境变量 `NR_CRX_KEY` → `~/.config/novel-yuedu/crx-private-key.pem` → `tools/crx-private-key.pem`（旧位置，仅过渡兼容并提示迁移）。找不到私钥时报错退出而**不会自动生成**——静默换钥会让扩展 ID 悄悄改变、安卓侧载老用户更新断链；确需换 ID 用 `python3 tools/package.py --gen-key` 显式生成（老用户须重装并丢本地进度）。
+zip 用于桌面侧载、Chrome Web Store / AMO 上传与 GitHub Release 附件；`dist/novel-yuedu-v<版本>.xpi` 与 Firefox 包同内容、仅扩展名换成 AMO/Firefox 规范的 `.xpi`，供 addons.mozilla.org 提交或自签；CRX3 由脚本用发布私钥直接签名，产出 `dist/novel-yuedu-v<版本>.crx` 一并作为 Release 附件。打包为**可复现构建**：同一源码连续打包字节完全一致（`manifest.json` 的时间戳取自源文件而非当前时刻）。`dist/` 与私钥均不纳入版本库，且**私钥绝不放在项目目录内**（gitignore 只防 git，防不了整目录压缩/网盘同步外带泄密），查找顺序：环境变量 `NR_CRX_KEY` → `~/.config/novel-yuedu/crx-private-key.pem` → `tools/crx-private-key.pem`（旧位置，仅过渡兼容并提示迁移）。找不到私钥时报错退出而**不会自动生成**——静默换钥会让扩展 ID 悄悄改变、安卓侧载老用户更新断链；确需换 ID 用 `python3 tools/package.py --gen-key` 显式生成（老用户须重装并丢本地进度）。
 
 手动 zip 转 crx（备选，效果等同；在纯英文路径下中转，规避 Chrome 对中文路径密钥参数的解析问题）：
 
@@ -164,6 +164,7 @@ test/fixtures/              本地小说站（UTF-8 与 GBK）
 CONTEXT.md                  领域术语表（书籍/章节/章节窗口/网络层防护/页面层守卫等）
 docs/adr/                   架构决策记录（ADR-0001~0004）
 docs/reviews/               架构整合审查报告（终版，不进入扩展包）
+docs/amo-submission.md      AMO 上架材料：文案、权限说明、数据声明、提交与手机安装步骤
 ```
 
 ## 已知限制（v1）
