@@ -124,6 +124,38 @@ XPI 关键字段（已核对）：`manifest_version: 3`、`background.scripts`�
 - **隐私政策**：因不收集数据，通常无需提供隐私政策 URL；若 AMO 表单强制要求，可填本仓库地址 `https://github.com/FengHuoLinShan/novel-yuedu#隐私`
 - **数据去向**：全部仅存本机 `chrome.storage`；唯二的网络请求是用户正在阅读的小说站页面本身，以及（仅 Chrome）用户主动触发的本机翻译模型下载
 
+### 对 `none` 声明的代码级核验（维护者已确认）
+
+`required: ["none"]` 由维护者确认。为备 AMO 审核追问，以下是可复现的核验证据：
+
+```bash
+# 全仓出站网络调用：只有 2 处
+# （用 \bfetch\( 加词边界，避免命中 _startPrefetch( 这类含 "fetch(" 的同名字符串）
+grep -rnE "\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource" src/
+#   src/content/extractor.js:26     fetch(chrome.runtime.getURL(...))      → 扩展内部资源，非网络
+#   src/content/next-chapter.js:31  fetch(url, {...})                      → 用户正在阅读的小说站自身
+
+# 无身份/外部通信/上传类 API
+grep -rnE "chrome\.identity|externally_connectable|chrome\.webRequest|chrome\.cookies" src/ manifest.json   # 无匹配
+grep -c externally_connectable manifest.json                                                                # 0
+
+# 无硬编码外部端点：本项目自有代码零匹配
+# 三处需要正确理解的非端点字面量：
+#   1. src/lib/ 是 vendored 第三方库（Mozilla Readability、DOMPurify 等），其中 URL 全是
+#      注释/文档链接与许可证头（wikipedia、schema.org 的 JSON-LD 类型正则、slate.com 注释等）
+#   2. settings-panel.js 的 http://www.w3.org/1999/xhtml 是 createElementNS 的 XHTML 命名空间
+#      标识符（XML 命名空间是不参与解析的不透明字符串，不会发起请求）
+#   3. 全仓真实 fetch( 只有上面列出的 2 处
+grep -rnoE "https?://[^\"' ]+" src/ --exclude-dir=lib | grep -v "w3\.org/1999/xhtml" \
+  && echo "!! 有匹配" || echo "零匹配 ✅"
+```
+
+结论：**扩展自身不向开发者或第三方发送任何数据。**
+
+- **预取下一章**（`next-chapter.js`）用 `credentials: 'same-origin'`、`redirect: 'follow'` 请求**当前小说站的下一页**——即用户自己正在浏览的那个站，携带的是用户与该站之间本就存在的会话 cookie。这属于用户自身的浏览行为，不是向开发者收集数据。跨域名链接按「尾章」处理，不跨站预取。
+- **端侧翻译**（`translator.js`）只调用浏览器内置 `Translator.availability` / `Translator.create`，用本机模型在本机完成翻译，该文件内**没有任何网络调用**。模型的下载由浏览器自身管理（且 Firefox 上该入口自动隐藏），与扩展无关。
+- 简繁转换是内置字表（`src/lib/chinese-convert.js`）的纯本地字符串变换。
+
 ---
 
 ## 5. Android 兼容
