@@ -55,7 +55,7 @@ Android/iOS 版 Chrome 本身不支持安装扩展（平台限制）。本扩展
 
 - **Microsoft Edge（安卓）**：从 [Releases](../../releases) 下载 `novel-yuedu-v*.crx`，在 Edge 隐藏的「开发人员选项」里以 `Extension Install by CRX` 安装，步骤见下
 - **Lemur / 狐猴浏览器**：支持商店扩展与本地 `.crx` 侧载，操作类似（Kiwi Browser 已于 2025 年初停止维护并从 Play 下架，不建议再作为宿主）
-- **Firefox for Android**：manifest 已含 gecko 兼容字段（事件页 background + 扩展 ID）；Firefox 强制要求扩展经 AMO 签名，**未签名的包在手机上装不了**（没有「从文件安装扩展」入口），正式安装需先提交 addons.mozilla.org 签名，开发者可先用 `about:debugging` 临时加载。提交所需的上架文案、权限说明与数据声明见 [docs/amo-submission.md](docs/amo-submission.md)
+- **Firefox for Android**：manifest 已含 gecko 兼容字段（事件页 background + 扩展 ID）。Firefox **强制要求扩展经 AMO 签名**，未签名的包装不上；签名后有两种装法：**① 从文件安装**——手机 Firefox 进「设置 → 关于 Firefox」**连点 Firefox 标志 5 次**解锁隐藏项，再进「设置 → Install Extension from File」选签名后的 `.xpi`（自主分发/未上架走这条）；**② 从 AMO 安装**——已上架时在扩展列表里直接添加，可自动更新。开发者自测可先用桌面 `about:debugging` 临时加载。提交所需的文案、权限说明、数据声明、第三方库链接与源码包要求见 [docs/amo-submission.md](docs/amo-submission.md)
 - 触屏下：悬浮按钮点击进入，双击暂停，`Aa` 面板与目录面板均为全高侧滑设计
 
 ### Edge（安卓）侧载 crx：三步安装
@@ -164,7 +164,7 @@ test/fixtures/              本地小说站（UTF-8 与 GBK）
 CONTEXT.md                  领域术语表（书籍/章节/章节窗口/网络层防护/页面层守卫等）
 docs/adr/                   架构决策记录（ADR-0001~0004）
 docs/reviews/               架构整合审查报告（终版，不进入扩展包）
-docs/amo-submission.md      AMO 上架材料：文案、权限说明、数据声明、提交与手机安装步骤
+docs/amo-submission.md      AMO 上架材料：文案、权限说明、数据声明、第三方库链接、源码包要求、提交与手机安装步骤
 ```
 
 ## 已知限制（v1）

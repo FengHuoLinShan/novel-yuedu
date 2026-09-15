@@ -1,17 +1,24 @@
-# AMO（addons.mozilla.org）提交材料 — 小说悦读 v0.2.14
+# AMO（addons.mozilla.org）提交材料 — 小说悦读
 
-Firefox（桌面 / Android）**强制要求扩展经 AMO 签名**，未签名的 `-firefox.zip` 在手机上无法安装。
-本文件是提交所需的一切：提交物、上架文案、权限说明、数据声明、提交步骤。
+Firefox（桌面 / Android）**强制要求扩展经 AMO 签名**，未签名的包在手机上装不了。
+本文件是提交所需的一切：提交物、上架文案、权限说明、数据声明、第三方库链接、源码包要求、提交与安装步骤。
+
+> **勘误（2026-09 联网核实后修订）**：本文件早前版本称「Firefox 手机上没有『从本地文件安装扩展』的入口」，**该说法是错的**。官方文档明确存在隐藏的 **Install Extension from File** 入口，见第 7 节。另：早前把「把 `strict_min_version` 提到 140」列为备选处置，核实后**并不需要**，见第 0 节。
 
 ---
 
-## 0. `data_collection_permissions`（已补上）
+## 0. `data_collection_permissions`（已补，形式经官方文档确认）
 
-Mozilla 已把 **`data_collection_permissions` 设为新扩展提交的必填项**（Firefox 140 起推行，此后新提交缺失会被校验器拒绝）。v0.2.13 的 manifest 里没有这个字段，直接提交大概率在第一个校验步骤被打回。
+依据 Mozilla 官方文档《Firefox built-in consent for data collection and transmission》
+（<https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/>，页面标注最后更新 2026-03-12）：
 
-> ⚠️ 该要求我无法在本机核实：当前环境的网页抓取被沙箱阻断（`web_fetch` 全部失败），没能读到 Mozilla 官方文档正文。**请以 AMO 校验器的实际提示为准。**
+> Firefox supports built-in consent for data collection and transmission in Firefox for desktop **140 and later**, and Firefox for Android **142 and later**.
+>
+> **From November 3, 2025, all new extensions must adopt** the Firefox built-in data collection consent system. Extensions must state if and what data they collect or transmit.
 
-**v0.2.14 已补上**，manifest 现状：
+→ v0.2.13 及更早的 manifest 缺该字段，**新提交会在校验阶段被拒**。v0.2.14 已补上。
+
+**v0.2.14 manifest 现状**（与官方文档 "No data collection" 示例**逐字一致**，官方示例同样不写 `optional`）：
 
 ```json
 "browser_specific_settings": {
@@ -25,18 +32,32 @@ Mozilla 已把 **`data_collection_permissions` 设为新扩展提交的必填项
 }
 ```
 
-**为什么是 `none`**：本扩展没有自建服务器，**不向开发者或第三方传输任何数据**。阅读进度、排版设置、站点启停只写本机 `chrome.storage.local/sync`；简繁转换是内置字表本地转换；端侧翻译走浏览器本机模型（且 Firefox 上该入口会自动隐藏）。预取下一章请求的是用户正在阅读的那个小说站自身，不属于向开发者收集数据。
+官方 "No data collection" 示例：
 
-> 该字段是**开发者对数据实践的声明**。提交前请再确认一次这一声明与实际行为一致，责任在发布者。
+```json
+"browser_specific_settings": {
+  "gecko": {
+    "id": "@extension-without-data-collection",
+    "data_collection_permissions": {
+      "required": ["none"]
+    }
+  }
+}
+```
 
-**若校验器仍报错**，两个已知的备选处置：
+### 为什么 `strict_min_version` 保持 128.0 不用改
 
-1. 报「`strict_min_version` 与 `data_collection_permissions` 不匹配」→ 把 `strict_min_version` 从 `128.0` 提到 `140.0`（会放弃 Firefox 128–139 用户，仅在确实被要求时才做）
-2. 报字段结构问题 → 尝试补 `"optional": []`
+内置同意界面只在桌面 140+ / Android 142+ 出现。官方文档对旧版的要求是：
 
-### 版本背景
+> **If your extension collects data** and a user installs it on Firefox for desktop 139 or earlier, or Firefox for Android 141 or earlier, it must display a custom data collection experience.
 
-原先我按「v0.2.13 已发布」为前提准备材料；补字段属于修改 `manifest.json`，会让扩展内容变化，因此**已 bump 到 v0.2.14 并重新打包发布**，保证 AMO 上签名的包与 Release 附件是同一份。v0.2.13 的 Release 保持不变，仍然有效。
+该义务**只针对「收集数据」的扩展**。我们声明 `none`（不收集任何数据），因此既不需要自建同意界面，也**不需要**把 `strict_min_version` 提到 140/142 —— 提到 140 只会白白损失 Firefox 128–139 用户。
+
+### 声明依据（已代码级核验，见第 4 节）
+
+本扩展无自建服务器，**不向开发者或第三方传输任何数据**；阅读进度、排版设置、站点启停只写本机 `chrome.storage`。
+
+> 该字段是**开发者对数据实践的声明**。责任在发布者。
 
 ---
 
@@ -44,8 +65,9 @@ Mozilla 已把 **`data_collection_permissions` 设为新扩展提交的必填项
 
 | 文件 | 说明 |
 |---|---|
-| `dist/novel-yuedu-v0.2.14.xpi` | AMO 提交用（与 `-firefox.zip` 同内容，规范扩展名） |
-| `dist/novel-reader-v0.2.14-firefox.zip` | 同内容，AMO 也接受 zip 上传 |
+| `dist/novel-yuedu-v<版本>.xpi` | AMO 提交用（与 `-firefox.zip` 同内容，规范扩展名） |
+| `dist/novel-reader-v<版本>-firefox.zip` | 同内容，AMO 也接受 zip 上传 |
+| **源码包**（需制作） | **必需**，见第 9 节 —— 本扩展含机器生成代码 |
 
 生成命令：
 
@@ -55,7 +77,7 @@ python3 tools/package.py
 
 XPI 关键字段（已核对）：`manifest_version: 3`、`background.scripts`（Firefox 事件页，**不含** `service_worker`）、`gecko.id = novel-yuedu@tywww.dev`、`strict_min_version: 128.0`、`data_collection_permissions.required = ["none"]`。
 
-`tools/package.py` 现已可复现构建：同一源码连续打包字节完全一致（原先 `manifest.json` 的时间戳取自当前时刻，导致每次打包校验和都变）。
+`tools/package.py` 为可复现构建：同一源码连续打包字节完全一致。
 
 ---
 
@@ -120,9 +142,9 @@ XPI 关键字段（已核对）：`manifest_version: 3`、`background.scripts`�
 
 ## 4. 数据收集与隐私政策
 
-- **收集数据类型**：无（建议选 `none`）
+- **收集数据类型**：无（选 `none`）
 - **隐私政策**：因不收集数据，通常无需提供隐私政策 URL；若 AMO 表单强制要求，可填本仓库地址 `https://github.com/FengHuoLinShan/novel-yuedu#隐私`
-- **数据去向**：全部仅存本机 `chrome.storage`；唯二的网络请求是用户正在阅读的小说站页面本身，以及（仅 Chrome）用户主动触发的本机翻译模型下载
+- **数据去向**：全部仅存本机 `chrome.storage`
 
 ### 对 `none` 声明的代码级核验（维护者已确认）
 
@@ -158,39 +180,71 @@ grep -rnoE "https?://[^\"' ]+" src/ --exclude-dir=lib | grep -v "w3\.org/1999/xh
 
 ---
 
-## 5. Android 兼容
+## 5. 第三方库链接（填入 "Notes for Reviewers"）
 
-1. 提交时在 **Android 兼容性**（"Firefox for Android"）处声明支持——Android 版 Firefox 只显示声明了 Android 兼容的扩展
-2. `strict_min_version: 128.0` 已满足当前 Android 版 Firefox 要求
-3. 无桌面专属 API 依赖（未使用 `browser.tabs.hide` 等），MV3 事件页写法对 Android 有效
+官方要求（<https://extensionworkshop.com/documentation/publish/third-party-library-usage/>）：必须提供**原始文件**链接与**可读源码**链接；用**发布 tag**，不能用 `master`、不能用 CDN；**reviewer 用 checksum 核对**，文件必须与官方发行版完全一致；写进 AMO 的 "Notes for Reviewers"。
+
+**已逐一校验：本扩展内置的第三方库均为官方发布版原文件、未做修改。**
+
+### Mozilla Readability 0.6.0
+
+```
+https://github.com/mozilla/readability/blob/0.6.0/Readability.js
+https://github.com/mozilla/readability/blob/0.6.0/Readability-readerable.js
+```
+
+| 文件 | sha256（与 0.6.0 官方文件逐字节一致） |
+|---|---|
+| `src/lib/Readability.js` | `34dcab3d0832d0019f02990eed6b6124e029e8c32b9f0c6f2550544ff8dff174` |
+| `src/lib/Readability-readerable.js` | `a98d28805804c1986ceed470678a3f409f150ee7f1d227f8c8239c005d21de65` |
+
+> 版本是靠 checksum 逐 tag 比对确定的（0.6.0 命中，0.5.0/0.4.4/0.4.3/0.4.2/0.4.1/0.4.0/0.3.0 均不匹配）——源文件头部没有版本号，此结论已实测。
+
+### DOMPurify 3.2.6
+
+```
+https://github.com/cure53/DOMPurify/blob/3.2.6/dist/purify.min.js
+```
+
+| 文件 | sha256（与官方 `dist/purify.min.js` 逐字节一致） |
+|---|---|
+| `src/lib/purify.min.js` | `89e1fa7647cb495370d3a997ace4387f5d15d9f4c5af12352c53daa400956287` |
+
+压缩版属第三方库的官方发行文件，按第三方库链接规则处理即可（checksum 一致），不因此额外要求我们提交 DOMPurify 的源码构建。
+
+### OpenCC 词典数据（**需先处理，见第 9 节**）
+
+`src/lib/chinese-convert.js` 由 `tools/gen_cc.py` 从 OpenCC 词典生成，词典本身是第三方数据输入。当前生成来源是 **`master` 快照**，不符合「必须用发布 tag」的要求。
 
 ---
 
-## 6. 提交步骤
+## 6. Android 兼容
 
-1. 登录 <https://addons.mozilla.org/developers/> → **Submit a New Add-on**
-2. 分发方式选 **On your own（自主分发）** 或 **On this site**：
-   - 仅自己/小范围用 → 选 On your own，仍会获得签名，且不公开列表
-   - 想让别人也能搜到 → 选 On this site，走完整审核
-3. 上传 `dist/novel-yuedu-v0.2.14.xpi`（`data_collection_permissions` 已随 v0.2.14 补上，见第 0 节）
-4. 填写第 2、3、4 节的文案与说明，勾选 Android 兼容
-5. 提交后等待自动签名（On your own 通常几分钟内完成，不进入人工队列）
-6. 签名完成后下载 **签名后的 XPI**，或用 AMO 给出的安装链接
+1. 提交时在 **平台兼容性** 处勾选 **Firefox for Android**（AMO 提交流程有 "Select the add-on's compatible platform(s)" 一步）
+2. `strict_min_version: 128.0` 满足当前 Android 版 Firefox 要求；因声明不收集数据，无需为同意界面把版本抬到 142（见第 0 节）
+3. 无桌面专属 API 依赖，MV3 事件页写法对 Android 有效
+4. **建议（可选）**：官方建议在 `browser_specific_settings` 里加 `gecko_android.strict_min_version` 来独立声明 Android 兼容区间，`web-ext lint` 的 Android 兼容检查依赖它。目前 manifest 只写了 `gecko`。
 
 ---
 
 ## 7. 手机上安装（签名完成后）
 
-**方式 A — 从 AMO 安装（推荐，可自动更新）**
+**方式 A — 从文件安装（自主分发/未上架时用这个）**
 
-1. Firefox for Android → **⋮ 菜单 → 扩展**
-2. 找到「小说悦读」→ **添加**
-3. 打开任意小说章节页，右下角出现 📖 悬浮按钮即成功
+官方步骤（<https://extensionworkshop.com/documentation/publish/install-self-distributed/>，"Install add-on from file on Android"）：
 
-**方式 B — 直接打开 AMO 安装页**
+1. 把**已签名的**扩展文件（`.xpi`）传/下载到手机
+2. Firefox → **设置 → 关于 Firefox**
+3. **连续快速点击 Firefox 标志 5 次**，解锁隐藏菜单项
+4. 回到 **设置 → Install Extension from File**
+5. 浏览并选中刚保存的扩展文件
+6. 提示时点 **Add**
+7. 扩展出现在「扩展」列表里即可使用；打开小说章节页，右下角出现 📖 悬浮按钮
 
-在 Firefox for Android 地址栏打开该扩展的 AMO 页面，点 **Add to Firefox / 添加到 Firefox**。
-（On your own 自主分发的包不在公开列表里，需用 AMO 后台给出的直链。）
+**方式 B — 从 AMO 安装（已上架时，可自动更新）**
+
+1. Firefox for Android → **⋮ 菜单 → 扩展** → 找到「小说悦读」→ **添加**
+2. 或在 Firefox for Android 里直接打开该扩展的 AMO 页面，点 **Add to Firefox / 添加到 Firefox**
 
 **方式 C — 临时载入（仅开发自测，重启失效）**
 
@@ -203,3 +257,87 @@ grep -rnoE "https?://[^\"' ]+" src/ --exclude-dir=lib | grep -v "w3\.org/1999/xh
 - **端侧翻译不可用**：依赖 Chrome 138+ 的 Translator API，Firefox 自动隐藏「译」入口
 - **导航锁定变弱**：Firefox 无 Navigation API，退化为 DNR 拦跨站 + `beforeunload` 原生确认框——站点强跳仍被拦下，但阅读中**手动关闭标签页也会弹一次确认**
 - 其余功能（简繁转换、目录、进度、无缝连读、白名单拦截）均正常
+
+---
+
+## 9. 源码包（**必需**）与一个待决问题
+
+### 为什么必须提交源码
+
+官方要求（<https://extensionworkshop.com/documentation/publish/source-code-submission/>）：只要代码是用下列方式产生的，就**必须上传源码并附构建说明**：
+
+> code minifiers… tools that generate a single file from other files… template engines… **any other custom tool that takes files, applies pre-processing, and generates file(s) to include in the extension**.
+
+> If you do not provide source code with clear instructions and the reviewer cannot evaluate your extension, **it may be rejected**.
+
+本扩展命中：
+
+| 文件 | 生成方式 | 归属 |
+|---|---|---|
+| `src/lib/chinese-convert.js` | `tools/gen_cc.py`（单行 17 万字符，223 KB） | 自有代码 |
+| `src/lib/purify.min.js` | 第三方 DOMPurify 压缩发行版 | 第三方（走第 5 节链接） |
+| `icons/icon{16,48,128}.png` | `tools/gen_icons.py` | 自有代码 |
+| 包内 `manifest.json`（Firefox 变体） | `tools/package.py` 改写 `background` 字段 | 自有代码 |
+
+官方对构建说明的要求：**reviewer 会照说明重建，然后 diff，必须零差异**；所用工具必须开源、**不能是在线的（web-based）**，须在本地可跑；建议附 README 说明系统/环境要求与完整命令。
+
+### 已验证的复现情况
+
+| 产物 | 结论 |
+|---|---|
+| `icons/*.png` | ✅ `gen_icons.py` 纯本地、无网络，重建**逐字节一致** |
+| `Readability*.js`、`purify.min.js` | ✅ 官方发布版原文件，checksum 一致 |
+| `manifest.json` 变体 | ✅ `tools/package.py` 可复现（连续打包字节一致） |
+| **`chinese-convert.js`** | ❌ **不可从任何 OpenCC 发布 tag 复现** |
+
+实测数据（`chinese-convert.js` 线上 sha256 = `539533a5a1265677c4b6f34b2c1f10f90b8218fd8c656fac90c314f929b61f80`）：
+
+- 用 **OpenCC `master`** 词典重跑 `gen_cc.py` → **完全一致 ✅**（master 当时 HEAD = commit `c363a7ba51`，2026-09-09）
+- 用发布 tag **ver.1.4.2 / 1.4.1 / 1.4.0 / 1.3.2 / 1.3.1 / 1.3.0** 重跑 → **全部不一致 ❌**
+
+问题在于：`gen_cc.py` 目前从 `https://raw.githubusercontent.com/BYVoid/OpenCC/**master**/data/dictionary/` 下载词典（仓库内不存这些输入）。而 AMO 规定第三方库"**non-release versions are not accepted**"，且要求构建能在本地离线复现。**以现状提交，源码审查这一关会卡住。**
+
+### 两个修法（需发布者决定）
+
+**方案 A — 改用发布 tag 重新生成（策略最干净，但字表会变）**
+
+- 把 `gen_cc.py` 的数据源从 `master` 改为最近的发布 tag（如 `ver.1.4.2`），重新生成 `chinese-convert.js`
+- 优点：生成来源是正式发布版，完全符合"必须用 release tag"的规则
+- 代价：字表内容与现在**不同**（master 上有 1.4.2 之后新增的映射），简繁转换行为会有细微变化 → **必须重跑简繁转换相关测试**（`test-core` 的 `ccConvert` 断言、`e2e-catalog` 的简繁目录断言），并 bump 版本、重新打包发布
+
+**方案 B — 锁定到 commit SHA + 把词典随源码包一起提交（行为完全不变）**
+
+- 把 `gen_cc.py` 的数据源固定为 master 当时的 commit `c363a7ba51`（不可变，不像 `master` 那样漂移），并把 4 个词典文件（合计约 **1.16 MB**，Apache-2.0）一并放进源码包，构建时**离线读取**
+- 优点：`chinese-convert.js` **逐字节不变**，无需改动功能、无需重跑转换断言；reviewer 无需联网即可零差异重建
+- 代价：生成输入是 commit SHA 而非发布 tag；需在 "Notes for Reviewers" 里说明这份数据来自 `c363a7ba51`（不可变快照），并附 OpenCC 仓库链接
+
+> 两方案都需要 **bump 版本并重新打包发布**（因为要么改了生成脚本、要么改了源码包约定），并制作源码包 zip。
+
+### 源码包建议内容
+
+```
+tools/gen_cc.py            # 字表生成器
+tools/gen_icons.py         # 图标生成器
+tools/package.py           # 打包（含 Firefox manifest 改写、CRX3 签名）
+tools/data/*.txt           # 方案 B：锁定的 OpenCC 词典（约 1.16 MB）
+BUILD.md                   # 构建说明：系统要求、完整命令、预期 checksum
+```
+
+`BUILD.md` 需写清：Python 3 版本要求、`openssl` 依赖（CRX 签名，仅 Chrome 侧载需要，AMO 审查可跳过）、以及从源码到 `dist/novel-yuedu-v<版本>.xpi` 的每一步命令，并给出各生成产物的 sha256 以便 reviewer 核对零差异。
+
+`tools/gen_fixtures.py` 生成的是**测试用**站点，不进扩展包，无需放入源码包。
+
+---
+
+## 10. 提交步骤
+
+1. 登录 <https://addons.mozilla.org/developers/> → **Submit a New Add-on**
+2. 分发方式选 **On your own（自主分发）** 或 **On this site**：
+   - 仅自己/小范围用 → 选 On your own，仍会获得签名、不公开列表，用第 7 节方式 A 安装
+   - 想让别人也能搜到 → 选 On this site，走完整审核
+3. 上传 `dist/novel-yuedu-v<版本>.xpi`
+4. **选择兼容平台**，勾选 Firefox for Android
+5. 按第 9 节判断是否需要提供**源码包**（本扩展需要），需要时上传并附 `BUILD.md`
+6. 填写第 2、3、4 节文案与说明；在 **Notes for Reviewers** 里填入第 5 节的第三方库链接
+7. 提交后等待校验/签名；On your own 通常几分钟完成，不进入人工队列
+8. 完成后下载签名后的 XPI，按第 7 节装到手机
