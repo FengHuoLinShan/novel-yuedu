@@ -18,7 +18,11 @@
 
     <button id="openReader" class="primary">进入阅读模式 <span class="kbd" id="toggleKbd">Alt+R</span></button>
 
-    <div class="section-title">最近阅读</div>
+    <div class="section-title">
+      <span>最近阅读</span>
+      <!-- 独立全页书架入口：新标签打开，不开在弹窗内 -->
+      <button id="openShelf" class="shelf-link">📚 书架 ›</button>
+    </div>
     <div id="recentList" class="recent"><div class="recent-empty">读取中…</div></div>
 
     <div class="group">

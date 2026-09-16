@@ -5,6 +5,8 @@
  *   NR.progress.get(bookKey, pageUrl) -> Promise<record|null>
  *   NR.progress.put(bookKey, record)  -> Promise<void>   // 串行化 + 旧格式迁移 + 200 本淘汰
  *   NR.progress.recent(limit)         -> Promise<record[]>
+ *   NR.progress.list()                -> Promise<entry[]> // 全量条目（带 bookKey，书架列表用）
+ *   NR.progress.remove(bookKey)       -> Promise<void>    // 删除一本书的进度（书架移除用）
  *
  * 键方案（冻结，见 ADR-0001）：每本书独立 key 'p:<书键>'；旧版整包 'progress' 只读兼容，
  * 首次写入时幂等迁移为独立 key 后删除。书键漂移时按章节 URL 目录归并（取 ts 最新）。
@@ -79,8 +81,23 @@
         .slice(0, limit || 8);
     },
 
+    /** 全量进度条目（含 legacy 兼容记录），按 ts 倒序；与 recent 同源但保留 bookKey（书架列表用） */
+    async list() {
+      const all = await store().getAll();
+      return Object.entries(collect(all))
+        .map(([bookKey, record]) => Object.assign({}, record, { bookKey }))
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    },
+
     put(bookKey, record) {
       chain = chain.then(() => this._write(bookKey, record)).catch(() => {});
+      return chain;
+    },
+
+    /** 删除 'p:<bookKey>'：沿用写串行链避免与 _write 竞态；失败静默（进度丢失可容忍） */
+    remove(bookKey) {
+      if (!bookKey) return Promise.resolve();
+      chain = chain.then(() => store().remove(keyOf(bookKey))).catch(() => {});
       return chain;
     },
 

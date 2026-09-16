@@ -5,7 +5,7 @@
  * 本模块只做三件事：
  *   - put(chapter)：网络抓取成功的章节进入微批缓冲（凑 5 条或 2000ms，pagehide 兜底），
  *     刷出时发 NR_CACHE_PUT 交后台落库（chainNextUrl/done 取批内末章的链信息）；
- *   - get/has/book：供 next-chapter 供章与断点续抓起点查询；
+ *   - get/has/book/latest：供 next-chapter 供章、断点续抓起点与书架续读落点查询；
  *   - listBooks/deleteBook/clearAll：设置面板「缓存管理」用。
  *
  * 书键与 progress 的目录归并口径一致（NR.dirnameOf），同一本书的章节归并到同一条书记录。
@@ -146,6 +146,12 @@
     async book(bookKey) {
       const resp = await send({ type: 'NR_CACHE_BOOK', bookKey: bookKey || bookKeyOf() });
       return (resp && resp.ok && resp.data) || null;
+    },
+
+    /** 查该书缓存中 ts 最新的章节（书架续读落点：有缓存但进度记录缺失的书），无则 null */
+    async latest(bookKey) {
+      const resp = await send({ type: 'NR_CACHE_LATEST', bookKey });
+      return resp && resp.data ? resp.data : null;
     },
 
     /** 全部缓存书列表（ts 倒序），设置面板用 */

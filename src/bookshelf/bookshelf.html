@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 独立全页书架：手机上也要按 device-width 布局（同 popup 的 viewport 说明） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="../../icons/icon128.png" />
+  <title>书架 · 小说悦读</title>
+  <link rel="stylesheet" href="bookshelf.css" />
+</head>
+<body>
+  <div class="shelf-wrap">
+    <header class="shelf-head">
+      <h1 class="shelf-logo">📖 书架 · 小说悦读</h1>
+      <div class="shelf-toolbar">
+        <input id="shelfSearch" type="search" placeholder="搜索书名 / 章节" autocomplete="off" />
+        <div class="shelf-chips">
+          <button class="shelf-chip active" data-filter="all">全部</button>
+          <button class="shelf-chip" data-filter="reading">在读</button>
+          <button class="shelf-chip" data-filter="cached">已缓存全本</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 加载失败：文案 + 重试（重试重新走完整加载） -->
+    <div id="shelfError" class="shelf-error" hidden>
+      <span id="shelfErrorMsg">加载失败</span>
+      <button class="shelf-retry">重试</button>
+    </div>
+
+    <!-- 空书架占位 -->
+    <div id="shelfEmpty" class="shelf-empty" hidden>书架还空着，去读一章吧</div>
+
+    <!-- 卡片容器：加载中先显示「读取中…」占位 -->
+    <main id="shelfList" class="shelf-list"><div class="shelf-loading">读取中…</div></main>
+  </div>
+
+  <!-- 脚本按依赖序直载（无构建系统，外部脚本文件，MV3 默认 CSP 允许） -->
+  <script src="../content/storage.js"></script>
+  <script src="../content/detector.js"></script>
+  <script src="../content/progress.js"></script>
+  <script src="../content/intent.js"></script>
+  <script src="../content/settings.js"></script>
+  <script src="../content/chapter-cache.js"></script>
+  <script src="bookshelf.js"></script>
+</body>
+</html>

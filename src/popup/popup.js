@@ -179,6 +179,12 @@
       closePopup();
     });
 
+    // 书架入口：独立全页新标签打开，弹窗收起
+    $('openShelf').addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('src/bookshelf/bookshelf.html') });
+      closePopup();
+    });
+
     $('floatingButton').addEventListener('change', async (e) => {
       const { settings } = await chrome.storage.sync.get('settings');
       await chrome.storage.sync.set({

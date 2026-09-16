@@ -118,6 +118,35 @@ console.log('progress 200 本淘汰:');
   t('超过 200 本淘汰最旧', keys.length === 200 && !st._dump()['p:book0'] && !!st._dump()['p:book200']);
 }
 
+console.log('progress list/remove 书架数据层:');
+{
+  const st = fakeStorage({
+    'p:bookB': { url: 'http://a.com/B/2.html', chapterTitle: 'B 第二章', ts: 100 },
+    'p:bookA': { url: 'http://a.com/A/1.html', chapterTitle: 'A 第一章', ts: 300 },
+    progress: { bookC: { url: 'http://a.com/C/1.html', chapterTitle: 'C 旧格式', ts: 200 } }
+  });
+  NR.progress._setStorage(st);
+  const list = await NR.progress.list();
+  t('list 收录新格式与 legacy 记录', list.length === 3);
+  t('list 条目带 bookKey', list.every((e) => typeof e.bookKey === 'string' && !!e.bookKey));
+  const legacyEntry = list.find((e) => e.bookKey === 'bookC');
+  t('legacy 记录按原键收录', !!legacyEntry && legacyEntry.chapterTitle === 'C 旧格式');
+  t('list 按 ts 倒序', list[0].ts === 300 && list[1].ts === 200 && list[2].ts === 100);
+  await NR.progress.remove('bookA');
+  const after = await NR.progress.list();
+  t('remove 后 list 不再含该书', after.length === 2 && !after.some((e) => e.bookKey === 'bookA'));
+  t('remove 不影响其他键', st._dump()['p:bookB'].ts === 100 && !!st._dump().progress.bookC);
+  t('remove 后 recent 也不含该书', !(await NR.progress.recent(8)).some((e) => e.chapterTitle === 'A 第一章'));
+  // put/remove 交替共享同一条写串行链：依次落盘，最终状态以后一次 put 为准
+  await NR.progress.put('bookD', { url: 'http://a.com/D/1.html', chapterTitle: 'D 一章', ts: 400 });
+  await NR.progress.remove('bookD');
+  await NR.progress.put('bookD', { url: 'http://a.com/D/2.html', chapterTitle: 'D 二章', ts: 500 });
+  const finalList = await NR.progress.list();
+  t('remove/put 交替后状态一致', finalList.some((e) => e.bookKey === 'bookD' && e.url === 'http://a.com/D/2.html'));
+  await NR.progress.remove('');
+  t('空参 remove 安全', (await NR.progress.list()).length === 3);
+}
+
 console.log('intent 跳转意图:');
 {
   const st = fakeStorage({});

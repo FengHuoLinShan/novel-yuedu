@@ -1,0 +1,156 @@
+/**
+ * bookshelf.css — 独立全页书架样式
+ *
+ * 全部颜色走 --nr-* CSS 变量（JS 按 NR.THEMES 写入；此处默认值 = light 主题，
+ * 保证 JS 生效前页面也可读）。视觉基因对齐 popup.css：accent、字号层级、间距、圆角。
+ */
+:root {
+  --nr-bg: #f7f7f4;
+  --nr-fg: #2c2c2c;
+  --nr-muted: #8a8a85;
+  --nr-line: #e4e4de;
+  --nr-accent: #4f46e5;
+  --nr-panel: #ffffff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--nr-fg);
+  background: var(--nr-bg);
+}
+
+/* 桌面 ~960px 居中，窄屏自然单列 */
+.shelf-wrap { max-width: 960px; margin: 0 auto; padding: 20px 16px 48px; }
+
+/* ---- 头部：标题 + 搜索 + 筛选 chips ---- */
+.shelf-head { margin-bottom: 16px; }
+.shelf-logo {
+  margin: 0 0 12px; font-size: 20px; font-weight: 700; letter-spacing: .5px;
+}
+.shelf-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+#shelfSearch {
+  flex: 1 1 200px; min-width: 0; padding: 8px 12px;
+  font: inherit; color: var(--nr-fg);
+  background: var(--nr-panel); border: 1px solid var(--nr-line); border-radius: 10px;
+  outline: none;
+}
+#shelfSearch:focus { border-color: var(--nr-accent); }
+.shelf-chips { display: flex; gap: 8px; flex-shrink: 0; }
+.shelf-chip {
+  padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--nr-muted); background: var(--nr-panel);
+  border: 1px solid var(--nr-line); border-radius: 999px;
+}
+.shelf-chip:hover { color: var(--nr-accent); border-color: var(--nr-accent); }
+.shelf-chip.active {
+  color: #fff; background: var(--nr-accent); border-color: var(--nr-accent); font-weight: 600;
+}
+
+/* ---- 状态占位：错误 / 空书架 / 读取中 ---- */
+.shelf-error {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 14px; margin-bottom: 12px; font-size: 12.5px;
+  background: var(--nr-panel); border: 1px solid var(--nr-line); border-radius: 10px;
+}
+.shelf-error[hidden] { display: none; }
+.shelf-retry {
+  padding: 5px 14px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--nr-accent); border: 0; border-radius: 8px;
+}
+.shelf-retry:hover { opacity: .88; }
+.shelf-empty { text-align: center; color: var(--nr-muted); font-size: 13px; padding: 56px 0; }
+.shelf-empty[hidden] { display: none; }
+.shelf-loading { text-align: center; color: var(--nr-muted); font-size: 13px; padding: 56px 0; }
+
+/* ---- 卡片网格：宽屏自适应多列，窄屏单列（280px 放不下即单列不溢出） ---- */
+.shelf-list {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+}
+.shelf-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px; background: var(--nr-panel);
+  border: 1px solid var(--nr-line); border-radius: 12px;
+  transition: transform .12s, box-shadow .12s, border-color .12s;
+}
+.shelf-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--nr-accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .07);
+}
+.shelf-title {
+  font-size: 14px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.shelf-readinfo {
+  font-size: 12px; color: var(--nr-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.shelf-meta { font-size: 10.5px; color: var(--nr-muted); }
+.shelf-cache {
+  align-self: flex-start;
+  font-size: 11px; color: var(--nr-accent);
+  border: 1px solid var(--nr-line); border-radius: 999px; padding: 1px 10px;
+}
+
+/* ---- 卡片动作区：续读 / 移除，或移除确认 ---- */
+.shelf-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 6px; }
+.shelf-resume {
+  padding: 6px 14px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--nr-accent); border: 0; border-radius: 8px;
+}
+.shelf-resume:hover { opacity: .88; }
+.shelf-remove {
+  padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--nr-muted); background: transparent;
+  border: 1px solid var(--nr-line); border-radius: 8px;
+}
+.shelf-remove:hover { color: var(--nr-fg); border-color: var(--nr-muted); }
+.shelf-confirm {
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px;
+  margin-top: auto; padding-top: 6px;
+}
+.shelf-del-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--nr-muted); cursor: pointer;
+  margin-right: auto; /* 确认/取消靠右，勾选项靠左 */
+}
+.shelf-del-label input { accent-color: var(--nr-accent); }
+.shelf-confirm-ok {
+  padding: 6px 14px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--nr-accent); border: 0; border-radius: 8px;
+}
+.shelf-confirm-ok:hover { opacity: .88; }
+.shelf-confirm-ok:disabled { opacity: .5; cursor: default; }
+.shelf-confirm-cancel {
+  padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--nr-muted); background: transparent;
+  border: 1px solid var(--nr-line); border-radius: 8px;
+}
+.shelf-confirm-cancel:hover { color: var(--nr-fg); border-color: var(--nr-muted); }
+
+/* ---- 轻提示：列表区顶部浮层，2s 自动消失（替代 alert） ---- */
+.shelf-toast {
+  position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+  max-width: 80vw; padding: 8px 16px; border-radius: 8px;
+  font-size: 12.5px; text-align: center;
+  background: var(--nr-fg); color: var(--nr-bg);
+  opacity: 0; pointer-events: none; transition: opacity .18s; z-index: 50;
+}
+.shelf-toast.show { opacity: 1; }
+
+/* ---- 触控设备：热区 ≥44px、字号加大（对齐 popup.css 的 coarse 适配） ---- */
+@media (pointer: coarse) {
+  body { font-size: 14px; }
+  .shelf-logo { font-size: 21px; }
+  #shelfSearch { min-height: 44px; font-size: 14px; }
+  .shelf-chip { min-height: 44px; font-size: 13px; }
+  .shelf-retry { min-height: 44px; }
+  .shelf-resume, .shelf-remove, .shelf-confirm-ok, .shelf-confirm-cancel { min-height: 44px; font-size: 13px; }
+  .shelf-del-label { padding: 10px 0; font-size: 12.5px; } /* label 撑大勾选项热区 */
+  .shelf-del-label input { width: 18px; height: 18px; }
+  .shelf-card { padding: 14px 14px 12px; }
+}

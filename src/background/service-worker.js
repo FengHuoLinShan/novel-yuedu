@@ -322,6 +322,7 @@ async function handleCacheMessage(msg) {
     case 'NR_CACHE_GET': return cacheGet(msg);
     case 'NR_CACHE_HAS': return cacheHas(msg);
     case 'NR_CACHE_BOOK': return cacheBook(msg);
+    case 'NR_CACHE_LATEST': return cacheLatest(msg);
     case 'NR_CACHE_LIST': return cacheList();
     case 'NR_CACHE_DELETE': return cacheDelete(msg);
     default: throw new Error('未知缓存消息: ' + msg.type);
@@ -417,6 +418,22 @@ async function cacheBook(msg) {
   return rec || null;
 }
 
+/**
+ * 查某本书缓存章节中 ts 最新的一条（书架续读落点：有缓存但进度记录缺失的书，
+ * 以末次落章的归一化 URL 作为续读入口）；无缓存返回 null。
+ */
+async function cacheLatest(msg) {
+  if (!msg.bookKey) throw new Error('NR_CACHE_LATEST 缺少 bookKey');
+  const db = await openCacheDb();
+  const tx = db.transaction(['chapters'], 'readonly');
+  const all = (await idbDone(tx.objectStore('chapters').index('byKey').getAll(msg.bookKey))) || [];
+  let best = null;
+  for (const rec of all) {
+    if (rec && (!best || (rec.ts || 0) > (best.ts || 0))) best = rec;
+  }
+  return best ? { url: best.url, title: best.title } : null;
+}
+
 /** 全部书记录，按 ts 倒序（最近缓存的在前） */
 async function cacheList() {
   const db = await openCacheDb();
@@ -436,10 +453,19 @@ async function cacheDelete(msg) {
     await idbDone(bookStore.clear());
   } else if (msg.bookKey) {
     const idx = chStore.index('byKey');
-    let cursor = await idbDone(idx.openCursor(IDBKeyRange.only(msg.bookKey)));
+    // continue() 不返回请求对象（推进结果在 openCursor 原请求上以 success 事件
+    // 送达），不能拿 idbDone 包它——否则对 undefined 挂 onsuccess 抛 TypeError，
+    // 实测只删掉第一条章节就中止，书记录也删不到。持有原请求逐次改写回调推进；
+    // 每条 delete 等成功后再 continue，事务活性才不断。
+    const req = idx.openCursor(IDBKeyRange.only(msg.bookKey));
+    let cursor = await idbDone(req);
     while (cursor) {
-      cursor.delete();
-      cursor = await idbDone(cursor.continue());
+      await idbDone(cursor.delete());
+      cursor = await new Promise((resolve, reject) => {
+        req.onsuccess = (e) => resolve(e.target.result || null);
+        req.onerror = () => reject(req.error || new Error('游标推进失败'));
+        cursor.continue();
+      });
     }
     await idbDone(bookStore.delete(msg.bookKey));
   } else {
