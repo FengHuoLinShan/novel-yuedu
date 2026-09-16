@@ -26,6 +26,9 @@
   // 日期/作者元数据行（如 "2024-04-14 作者： xxx"，部分站点正文首行常见）
   const META_LINE_RE = /^\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}/;
 
+  // 竖线混淆行：站点用「阅|读|模|式」这类字间插竖线的手段反抓取/导流，正文不会这样写
+  const PIPE_OBFUSCATED_RE = /(?:.{1,3}\|){5,}/;
+
   // 存在中文或字母数字（剔除纯符号行）
   const HAS_CONTENT_RE = /[\u3400-\u4dbf\u4e00-\u9fff a-zA-Z0-9]/;
 
@@ -61,6 +64,7 @@
       if (META_LINE_RE.test(line)) continue;
       if (/^作者[:：]/.test(line)) continue;
       if (WATERMARK_RE.test(line)) continue;
+      if (PIPE_OBFUSCATED_RE.test(line)) continue;
       if (!HAS_CONTENT_RE.test(line)) continue;
       // 超长且无任何标点的行，多为反爬填充文本
       if (line.length > 300 && !/[，。！？；：…、]/.test(line)) continue;

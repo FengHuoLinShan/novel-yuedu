@@ -98,7 +98,7 @@ try {
     const panelOpen = await evalJs(cdp1, `document.getElementById('novel-reader-host').shadowRoot.querySelector('.nr-root').classList.contains('nr-panel-open')`);
     check('排版设置面板可打开', panelOpen);
     const boxCount = await evalJs(cdp1, `document.getElementById('novel-reader-host').shadowRoot.querySelectorAll('.nr-panel input[type="checkbox"]').length`);
-    check('设置面板含 8 个开关（含导航锁定）', boxCount === 8, String(boxCount));
+    check('设置面板含 9 个开关（含导航锁定与整本缓存）', boxCount === 9, String(boxCount));
 
     // 简繁转换：切到繁体后正文就地转换，切回原文还原
     const ccFirst = await evalJs(cdp1, `(async()=>{const sr=document.getElementById('novel-reader-host').shadowRoot;const first=()=>sr.querySelector('.nr-chapter .nr-p').textContent;const before=first();

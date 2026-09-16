@@ -91,6 +91,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     handleDnrSession(!!msg.enable, msg.host, tabId).catch(() => {});
     return false; // fire-and-forget
   }
+  if (msg && typeof msg.type === 'string' && msg.type.indexOf('NR_CACHE_') === 0) {
+    // 整本章节持久缓存（IndexedDB）：统一 Promise 封装的异步 sendResponse，
+    // 响应统一为 {ok, data} / {ok:false, error}，调用方见 src/content/chapter-cache.js
+    handleCacheMessage(msg)
+      .then((data) => {
+        try { sendResponse({ ok: true, data }); } catch (e) { /* 响应通道已关闭 */ }
+      })
+      .catch((e) => {
+        try { sendResponse({ ok: false, error: String((e && e.message) || e) }); } catch (e2) { /* 同上 */ }
+      });
+    return true; // 异步 sendResponse
+  }
   return false;
 });
 
@@ -222,4 +234,217 @@ async function handleTabNavigated(tabId, host) {
   readingTabs.delete(tabId);
   await persistReadingTabs();
   await rebuildSessionRules();
+}
+
+// ---------------- 整本章节持久缓存（IndexedDB） ----------------
+// 内容脚本不直接持有 IDB 连接：统一经 NR_CACHE_* 消息路由到这里读写，连接随 SW 生命周期惰性管理。
+// DB novel-reader（声明 v1；若被外部工具以同版本号抢先建成空库，会自动升一版补建 store）：
+//   chapters（keyPath 'url'，索引 'byKey' → bookKey）——章节记录，url 为去 hash 的归一化 URL
+//   books（keyPath 'bookKey'）——书记录：count/size 只累计真正新增的章节（按 url 幂等），
+//     nextUrl = 已缓存链尾章的下一章 URL（断点续抓起点），done = true 表示全书已到尾（链尾 nextUrl 为空）
+
+const CACHE_DB_NAME = 'novel-reader';
+const CACHE_DB_VERSION = 1;
+let cacheDbPromise = null;
+
+const CACHE_STORES_OK = (db) => db.objectStoreNames.contains('chapters') && db.objectStoreNames.contains('books');
+
+/**
+ * 惰性打开数据库并确保 object store 就绪。
+ * 若库曾被外部工具以同版本号抢先创建（没有任何 store），第二次尝试升一个版本号
+ * 触发 upgradeneeded 补建——否则 equal-version 的 open 永远不跑升级，缓存层会静默失效。
+ */
+async function openCacheDbOnce(version) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CACHE_DB_NAME, version);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('chapters')) {
+        const store = db.createObjectStore('chapters', { keyPath: 'url' });
+        store.createIndex('byKey', 'bookKey', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('books')) {
+        db.createObjectStore('books', { keyPath: 'bookKey' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('IndexedDB 打开失败'));
+  });
+}
+
+function openCacheDb() {
+  if (!cacheDbPromise) {
+    cacheDbPromise = (async () => {
+      let db = await openCacheDbOnce(CACHE_DB_VERSION);
+      if (CACHE_STORES_OK(db)) return db;
+      db.close();
+      db = await openCacheDbOnce(CACHE_DB_VERSION + 1);
+      if (!CACHE_STORES_OK(db)) throw new Error('IndexedDB store 初始化失败');
+      return db;
+    })();
+    cacheDbPromise.catch(() => {
+      cacheDbPromise = null; // 失败允许下次重试
+    });
+  }
+  return cacheDbPromise;
+}
+
+/** IDBRequest → Promise */
+function idbDone(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('IndexedDB 请求失败'));
+  });
+}
+
+/** 事务完成 → Promise */
+function txDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB 事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务中止'));
+  });
+}
+
+/** 缓存键归一化：去 hash（origin + pathname + search），与 extractor 的 stripHash 口径一致 */
+function normCacheUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname + u.search;
+  } catch (e) {
+    return '';
+  }
+}
+
+async function handleCacheMessage(msg) {
+  switch (msg.type) {
+    case 'NR_CACHE_PUT': return cachePut(msg);
+    case 'NR_CACHE_GET': return cacheGet(msg);
+    case 'NR_CACHE_HAS': return cacheHas(msg);
+    case 'NR_CACHE_BOOK': return cacheBook(msg);
+    case 'NR_CACHE_LIST': return cacheList();
+    case 'NR_CACHE_DELETE': return cacheDelete(msg);
+    default: throw new Error('未知缓存消息: ' + msg.type);
+  }
+}
+
+/**
+ * 批量落库章节并 upsert 书记录（单事务，原子）。
+ * count/size 只累计本批中 DB 里尚不存在的 URL（重复 put 不重复计数）；
+ * nextUrl/done 以调用方显式传入的 chainNextUrl/done 为准（链尾章的下一章与到尾标记）。
+ */
+async function cachePut(msg) {
+  const book = msg.book || {};
+  const bookKey = book.bookKey || '';
+  const chapters = Array.isArray(msg.chapters) ? msg.chapters : [];
+  if (!bookKey) throw new Error('NR_CACHE_PUT 缺少 bookKey');
+  const db = await openCacheDb();
+  const tx = db.transaction(['chapters', 'books'], 'readwrite');
+  const chStore = tx.objectStore('chapters');
+  const bookStore = tx.objectStore('books');
+  let added = 0;
+  let addedBytes = 0;
+  for (const raw of chapters) {
+    if (!raw || !raw.url || !Array.isArray(raw.paragraphs) || !raw.paragraphs.length) continue;
+    const rec = {
+      url: normCacheUrl(raw.url),
+      bookKey,
+      title: raw.title || '',
+      bookTitle: raw.bookTitle || '',
+      paragraphs: raw.paragraphs,
+      nextUrl: raw.nextUrl ? normCacheUrl(raw.nextUrl) : null,
+      prevUrl: raw.prevUrl ? normCacheUrl(raw.prevUrl) : null,
+      indexUrl: raw.indexUrl ? normCacheUrl(raw.indexUrl) : null,
+      ts: Date.now()
+    };
+    if (!rec.url) continue;
+    // 事务内只 await IDB 请求的 Promise（微任务续接不会令事务失活），串行 get→put 保证幂等
+    const existing = await idbDone(chStore.get(rec.url));
+    if (!existing) {
+      added++;
+      addedBytes += JSON.stringify(rec).length; // 字节估算：序列化长度
+    }
+    await idbDone(chStore.put(rec));
+  }
+  const prev = (await idbDone(bookStore.get(bookKey))) || {};
+  const next = {
+    bookKey,
+    title: book.title || prev.title || '',
+    count: (prev.count || 0) + added,
+    size: (prev.size || 0) + addedBytes,
+    nextUrl: msg.chainNextUrl !== undefined ? (msg.chainNextUrl ? normCacheUrl(msg.chainNextUrl) : null) : (prev.nextUrl || null),
+    done: msg.done !== undefined ? !!msg.done : !!prev.done,
+    ts: Date.now()
+  };
+  await idbDone(bookStore.put(next));
+  await txDone(tx);
+  return { count: next.count, added };
+}
+
+/** 查单章记录：命中返回记录，未命中返回 null */
+async function cacheGet(msg) {
+  const url = normCacheUrl(msg.url);
+  if (!url) return null;
+  const db = await openCacheDb();
+  const tx = db.transaction(['chapters'], 'readonly');
+  const rec = await idbDone(tx.objectStore('chapters').get(url));
+  return rec || null;
+}
+
+/** 批量存在性查询：{url: boolean}（键与入参一致，均为归一化 URL） */
+async function cacheHas(msg) {
+  const urls = (Array.isArray(msg.urls) ? msg.urls : []).map(normCacheUrl).filter(Boolean);
+  const out = {};
+  if (!urls.length) return out;
+  const db = await openCacheDb();
+  const tx = db.transaction(['chapters'], 'readonly');
+  const store = tx.objectStore('chapters');
+  // 同步发出全部 get 再统一 await：避免逐条 await 的事务活性顾虑
+  const pending = urls.map((u) => ({ u, req: idbDone(store.get(u)) }));
+  for (const { u, req } of pending) {
+    const rec = await req;
+    out[u] = !!rec;
+  }
+  return out;
+}
+
+/** 查书记录：命中返回记录，未命中返回 null */
+async function cacheBook(msg) {
+  if (!msg.bookKey) return null;
+  const db = await openCacheDb();
+  const tx = db.transaction(['books'], 'readonly');
+  const rec = await idbDone(tx.objectStore('books').get(msg.bookKey));
+  return rec || null;
+}
+
+/** 全部书记录，按 ts 倒序（最近缓存的在前） */
+async function cacheList() {
+  const db = await openCacheDb();
+  const tx = db.transaction(['books'], 'readonly');
+  const all = (await idbDone(tx.objectStore('books').getAll())) || [];
+  return all.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+/** 删除整本书或全部缓存：章节用 byKey 索引游标逐条删，再删书记录 */
+async function cacheDelete(msg) {
+  const db = await openCacheDb();
+  const tx = db.transaction(['chapters', 'books'], 'readwrite');
+  const chStore = tx.objectStore('chapters');
+  const bookStore = tx.objectStore('books');
+  if (msg.all) {
+    await idbDone(chStore.clear());
+    await idbDone(bookStore.clear());
+  } else if (msg.bookKey) {
+    const idx = chStore.index('byKey');
+    let cursor = await idbDone(idx.openCursor(IDBKeyRange.only(msg.bookKey)));
+    while (cursor) {
+      cursor.delete();
+      cursor = await idbDone(cursor.continue());
+    }
+    await idbDone(bookStore.delete(msg.bookKey));
+  } else {
+    throw new Error('NR_CACHE_DELETE 需要 bookKey 或 all:true');
+  }
+  await txDone(tx);
+  return { ok: true };
 }

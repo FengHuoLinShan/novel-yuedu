@@ -56,14 +56,14 @@ sha256 539533a5a1265677c4b6f34b2c1f10f90b8218fd8c656fac90c314f929b61f80
 | `icons/icon48.png` | `fbd51bd966913e09eb7b0fed877f16ba6e8b41a8ca904bb244890b88341708eb` |
 | `icons/icon128.png` | `b96acd6d08bbe0d2d9b1e938b18fedddc802a14ccc8f605861af2b6410660a1c` |
 
-**最终产物 `dist/novel-yuedu-v0.2.15.xpi`（提交给 AMO 的文件）**
+**最终产物 `dist/novel-yuedu-v0.2.16.xpi`（提交给 AMO 的文件）**
 
 ```
-sha256 abb5ab205615cb331893140ee80f42dc9c777af31d9db505a5665f9e7b60dfd8
-     213489 字节
+sha256 9dec114a624f1cd5e07e2b134e6929d042b87b74108741a6e6a545a86e872092
+     224383 字节
 ```
 
-打包本身也是**逐字节可复现**的：zip 条目时间戳被固定为 `1980-01-01`，因此即使重跑生成器改动了源文件 mtime（内容不变），重建产物字节仍完全一致。完整重建（第 1→3 步）重复执行任意次，上述 sha256 恒定不变。Chrome 主包 `novel-reader-v0.2.15.zip` 仅 `manifest.json` 的 `background` 字段不同（`service_worker`），其余 27 个成员与之逐字节相同。
+打包本身也是**逐字节可复现**的：zip 条目时间戳被固定为 `1980-01-01`，因此即使重跑生成器改动了源文件 mtime（内容不变），重建产物字节仍完全一致。完整重建（第 1→3 步）重复执行任意次，上述 sha256 恒定不变。Chrome 主包 `novel-reader-v0.2.16.zip` 仅 `manifest.json` 的 `background` 字段不同（`service_worker`），其余 28 个成员与之逐字节相同。
 
 ## 本扩展中被生成/改写的文件
 

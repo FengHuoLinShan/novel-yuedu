@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""生成本地测试站点 fixture：utf8site/ 与 gbksite/，各含目录页 + 3 个章节页；longsite/ 含 16 章（连读/收起回归）。
+"""生成本地测试站点 fixture：utf8site/ 与 gbksite/，各含目录页 + 3 个章节页；longsite/ 含 16 章（连读/收起回归）；
+pagesite/ 为分页式站点（8 章每章 2 分页，整本持久缓存 e2e 用）。
 模拟笔趣阁形态：杂乱布局、广告节点、水印文本、底部 上一章/目录/下一章 导航。
 运行：python3 tools/gen_fixtures.py，然后 python3 -m http.server -d test/fixtures 8080
 """
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -212,6 +214,131 @@ def write(path: Path, text: str, encoding: str):
     print(f"wrote {path.relative_to(ROOT)} ({encoding})")
 
 
+# 分页式站点（pagesite）：8 章每章 2 分页共 16 页，用于整本持久缓存 e2e（断点续抓/离线供章）。
+# 章节页 #main > h1 + .content（每页 ≥8 个 <p>、CJK ≥450，保证 minCjk=400 浮球判定通过）；
+# 底部 .page 导航三链接：上一页（各章首页用 javascript:void(0)）/ catalog.html 目录 / 下一页；
+# 尾页 8_2.html 不输出下一页链接 → 抓取链自然终止（books.done=true）。
+# 尾页刻意做成"章末短分页"（CJK 120~300 + 竖线混淆提示行）：分页式站点（如 1qxs）的章末页
+# 只有一两百字，低于默认提取门槛会熔断整本链；getChapter 的 minCjk=120 必须放行它。
+PAGESITE_BOOK = "镜华录"
+PAGESITE_CHAPTERS = [
+    ("第1章", "雾锁渡口"),
+    ("第2章", "灯影疑云"),
+    ("第3章", "夜探货栈"),
+    ("第4章", "血字木牌"),
+    ("第5章", "双镜奇缘"),
+    ("第6章", "水落石出"),
+    ("第7章", "旧约重提"),
+    ("第8章", "潮平岸阔"),
+]
+PAGESITE_WATERMARK = "【测试书名】小说免费阅读，请收藏　示例站【example.com】"
+PAGESITE_PIPE_NOTICE = "阅|读|模|式|或|畅|读|模|式|下，无|法|显|示|本|章|节|全|部|内|容，请|返|回|原|网|页阅|读。"
+PAGESITE_PARAS = [
+    "暮色沉进江面的时候，渡口的青石阶被水汽浸得发亮，艄公把缆绳在木桩上又绕了一圈。",
+    "对岸的山影被雾揉成一团淡墨，只有半山那盏灯还亮着，像谁忘了吹熄的蜡烛。",
+    "她把油纸伞收在门后，伞尖滴下的水在青砖上积成一小滩，映出半张疲惫的脸。",
+    "柜台后的掌柜抬起眼皮扫了她一眼，又低头拨弄算盘，珠子声在空荡的大堂里格外清脆。",
+    "墙上的告示被风掀起一角，浆糊干透的边缘哗啦作响，字迹已经被潮气晕开了。",
+    "后院传来劈柴声，一下一下，不紧不慢，像是给这雾夜数着更次。",
+    "灶膛里的火光忽明忽暗，煨着的药罐咕嘟作响，苦味混着水汽漫过半个院子。",
+    "远处传来一声橹响，又很快被雾吞没，只有涟漪一层层推到岸边，碰碎了灯的倒影。",
+    "他把信纸折成三折塞回封套，火漆上的印痕已经被拇指磨得模糊，认不出是谁的家徽。",
+    "更夫的梆子敲过三巡，巷子深处的犬吠此起彼伏，又被一声叱喝镇了下去。",
+    "桌上的茶早就凉透了，水面浮着一层薄薄的白气，像谁叹息之后留下的痕迹。",
+    "夜航的船灯在雾里晕成一团团黄斑，忽远忽近，仿佛整条江都在慢慢地呼吸。",
+    "她数着廊柱走过长街，每一步都踩在灯影的缝隙里，像是要把来路从记忆中删去。",
+    "货栈的门缝里透出一线光，人语声压得极低，偶尔夹着金属轻轻磕碰的脆响。",
+    "雨点开始敲打瓦当，先是零星几声，随即连成一片，把整座镇子裹进水声里。",
+    "他把铜镜翻过来，背面錾着的云纹已经磨损，唯有边缘那道刻痕还清晰如昨。",
+]
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def pagesite_page_paras(ch_no: str, ch_title: str, page_no: int, short: bool = False) -> list:
+    """单页正文段落：水印行打头 + 章节开场行 + 填充段；断言 CJK ≥450、段落 ≥8（生成期自检）。
+
+    short=True 生成章末短分页：CJK 120~300（高于 getChapter 的 minCjk=120、低于默认 300），
+    并插入竖线混淆提示行（cleaner 必须整行过滤，否则会以乱码段落入库）。
+    """
+    paras = [
+        PAGESITE_WATERMARK,
+        f"{ch_no} {ch_title}（{page_no}/2）：夜航的汽笛声隔着雾传来，闷闷的，像谁在江底敲门。",
+    ]
+    if short:
+        paras.append(PAGESITE_PIPE_NOTICE)
+        paras.append(PAGESITE_PARAS[0])
+        paras.append(PAGESITE_PARAS[3])
+        body_cjk = len(_CJK_RE.findall("".join(paras)))
+        assert 120 < body_cjk < 300, f"pagesite 短分页 CJK 应在 (120,300)：{ch_no} p{page_no} = {body_cjk}"
+        assert len(paras) >= 4, f"pagesite 短分页段落不足 4：{ch_no} p{page_no}"
+        return paras
+    i = (page_no - 1) * 5
+    while len(paras) < 16:
+        paras.append(PAGESITE_PARAS[i % len(PAGESITE_PARAS)])
+        i += 1
+    body_cjk = len(_CJK_RE.findall("".join(paras)))
+    assert body_cjk >= 450, f"pagesite 正文 CJK 不足 450：{ch_no} p{page_no} = {body_cjk}"
+    assert len(paras) >= 8, f"pagesite 正文段落不足 8：{ch_no} p{page_no}"
+    return paras
+
+
+def pagesite_page(ch_no: str, ch_title: str, n: int, page_no: int, total_ch: int) -> str:
+    is_first_page = page_no == 1
+    # 上一页：各章首页用 javascript:void(0)（非 http 链接会被导航识别忽略），其余指前一分页
+    prev_href = "javascript:void(0)" if is_first_page else f"{n}.html"
+    # 下一页：本章第 1 页 → 本页第 2 分页；第 2 分页 → 下一章首页；末章末页不输出（链自然终止）
+    has_next = not (n == total_ch and page_no == 2)
+    next_href = f"{n}_2.html" if is_first_page else f"{n + 1}.html"
+    next_link = f'<a href="{next_href}">下一页</a>' if has_next else ""
+    paras = pagesite_page_paras(ch_no, ch_title, page_no, short=not has_next)
+    para_ps = "".join(f"<p>{t}</p>\n" for t in paras)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>{PAGESITE_BOOK}_{ch_no} {ch_title}({page_no}/2)</title>
+</head>
+<body>
+<div id="main">
+<h1>{ch_no} {ch_title}({page_no}/2)</h1>
+<div class="content">
+{para_ps}
+</div>
+</div>
+<div class="page">
+<a href="{prev_href}">上一页</a> <a href="catalog.html">目录</a> {next_link}
+</div>
+<div class="footer">{PAGESITE_BOOK} 示例站页面，仅供本地扩展测试使用</div>
+</body>
+</html>
+"""
+
+
+def pagesite_catalog() -> str:
+    items = "".join(
+        f'<li><a href="{n}.html">{ch_no} {ch_title}</a></li>\n'
+        for n, (ch_no, ch_title) in enumerate(PAGESITE_CHAPTERS, start=1)
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>{PAGESITE_BOOK}最新章节目录_示例站</title>
+</head>
+<body>
+<div class="header"><h1>{PAGESITE_BOOK}</h1></div>
+<div id="list">
+<h2>章节目录</h2>
+<ul>
+{items}
+</ul>
+</div>
+<div class="footer">{PAGESITE_BOOK} 示例站页面，仅供本地扩展测试使用</div>
+</body>
+</html>
+"""
+
+
 def main():
     # UTF-8 站
     (FIX / "utf8site" / "index.html").write_text(index_page("山河剑经", CHAPTERS), encoding="utf-8")
@@ -228,6 +355,12 @@ def main():
     # 静态 JS 探针：e2e-adguard 用 <script src> 探测 DNR 对 script 类型请求的拦截/放行
     # （html 当 script 会被浏览器按 MIME 拒执行，onerror 与拦截不可区分，必须用真 .js）
     write(FIX / "adstub.js", "// e2e-adguard script 探针（内容无需副作用）\n", "utf-8")
+    # 分页式站点（8 章每章 2 分页共 16 页）：整本持久缓存 e2e 用，UTF-8
+    write(FIX / "pagesite" / "catalog.html", pagesite_catalog(), "utf-8")
+    for n, (ch_no, ch_title) in enumerate(PAGESITE_CHAPTERS, start=1):
+        for page_no in (1, 2):
+            name = f"{n}.html" if page_no == 1 else f"{n}_{page_no}.html"
+            write(FIX / "pagesite" / name, pagesite_page(ch_no, ch_title, n, page_no, len(PAGESITE_CHAPTERS)), "utf-8")
     print("done. serve with: python3 -m http.server -d test/fixtures 8080")
 
 

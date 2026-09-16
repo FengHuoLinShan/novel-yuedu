@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "小说悦读",
-  "version": "0.2.15",
-  "description": "沉浸式小说阅读模式：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、目录快速跳转与阅读进度记录、离线简繁转换、端侧翻译（Chrome 138+）、阅读期间页面导航锁定。",
+  "version": "0.2.16",
+  "description": "沉浸式小说阅读模式：自动排版适应屏幕、字号行距可调、屏蔽广告与图片、预加载下一章无缝连读、整本章节持久缓存、目录快速跳转与阅读进度记录、离线简繁转换、端侧翻译（Chrome 138+）、阅读期间页面导航锁定。",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -67,6 +67,7 @@
         "src/content/cleaner.js",
         "src/content/extractor.js",
         "src/content/next-chapter.js",
+        "src/content/chapter-cache.js",
         "src/content/translator.js",
         "src/content/settings.js",
         "src/content/progress.js",

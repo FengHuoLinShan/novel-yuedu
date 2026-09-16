@@ -27,6 +27,7 @@
     noImages: true,      // 屏蔽正文图片
     preload: true,       // 预加载下一章
     autoAppend: true,    // 滚动到底自动拼接下一章
+    cacheBook: true,     // 阅读时后台缓存整本书（依次抓取后续章节落 IndexedDB，消耗流量）
     clickPaging: true,   // 点击屏幕上/下三分之一区域翻页
     floatingButton: true, // 显示悬浮按钮
     blockAdsOnRead: true,  // 阅读时启用白名单式拦截：仅放行本站域名的请求（会话级 DNR 规则）

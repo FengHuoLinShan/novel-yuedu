@@ -154,6 +154,23 @@
     }
     .nr-reset:hover { color: var(--nr-accent); border-color: var(--nr-accent); }
     .nr-kbd { color: var(--nr-muted); font-size: 11px; text-align: center; margin-top: 18px; line-height: 1.8; }
+    /* 整本缓存进度 chip：工具栏小号弱化文本，完成后淡出 */
+    .nr-cache-chip {
+      flex-shrink: 0; font-size: 11px; color: var(--nr-muted);
+      white-space: nowrap; transition: opacity .6s ease;
+    }
+    .nr-cache-chip.nr-fade { opacity: 0; }
+    /* 设置面板缓存管理分区 */
+    .nr-cache-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+    .nr-cache-main { flex: 1; min-width: 0; line-height: 1.4; }
+    .nr-cache-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nr-cache-meta { color: var(--nr-muted); font-size: 11px; }
+    .nr-cache-empty { color: var(--nr-muted); padding: 6px 0; }
+    .nr-cache-del {
+      all: unset; cursor: pointer; flex-shrink: 0; font: inherit;
+      border: 1px solid var(--nr-line); border-radius: 6px; padding: 4px 10px; color: var(--nr-muted);
+    }
+    .nr-cache-del:hover { color: var(--nr-accent); border-color: var(--nr-accent); }
     .nr-catalog {
       position: absolute; top: 0; left: 0; bottom: 0; z-index: 40;
       width: min(360px, 85vw); background: var(--nr-panel);
@@ -302,6 +319,8 @@
         if (state.hostObserver) state.hostObserver.disconnect();
         if (state.unsubscribeSettings) state.unsubscribeSettings();
         if (state.panelApi && state.panelApi.dispose) state.panelApi.dispose();
+        if (state.cacheProgHandler) document.removeEventListener('novelreader:cacheprog', state.cacheProgHandler);
+        clearTimeout(state.cacheChipTimer);
       } catch (e) {
         /* 忽略 */
       }
@@ -356,6 +375,7 @@
         '<div class="nr-progress"></div>' +
         '<header class="nr-header nr-hidden">' +
         '  <div class="nr-titles"><div class="nr-book"></div><div class="nr-chapter-name"></div></div>' +
+        '  <span class="nr-cache-chip"></span>' +
         '  <div class="nr-actions">' +
         '    <button class="nr-act" data-act="catalog" title="目录与快速跳转">☰ <span class="nr-act-text">目录</span></button>' +
         (NR.translateSupported && NR.translateSupported()
@@ -389,6 +409,7 @@
       state.headerBook = root.querySelector('.nr-book');
       state.headerChapter = root.querySelector('.nr-chapter-name');
       state.progressBar = root.querySelector('.nr-progress');
+      state.cacheChip = root.querySelector('.nr-cache-chip');
       this.rootEl = root;
 
       // 章节窗口：记录形态、滑动裁剪与等高占位几何都在模块内（见 ADR-0004）
@@ -577,6 +598,10 @@
       document.documentElement.appendChild(host);
       state.unsubscribeSettings = NR.subscribeSettings(() => this._applySettings());
       this._applySettings();
+      // 整本缓存进度 chip：事件源是 next-chapter.js 的 NR.bookSaver（running 计数 / done 淡出 / paused 隐藏）
+      state.cacheChipTimer = 0;
+      state.cacheProgHandler = (e) => this._onCacheProg((e && e.detail) || {});
+      document.addEventListener('novelreader:cacheprog', state.cacheProgHandler);
       this._showHeader();
     },
 
@@ -1304,7 +1329,32 @@
       if (!NR.settings.preload) return;
       const state = this.state;
       const last = state.window.lastRendered();
-      if (last) NR.loader.prefetchFrom(last.meta.url, PREFETCH_DEPTH).catch(() => {});
+      if (last && NR.bookSaver) NR.bookSaver.start(last.meta.url, PREFETCH_DEPTH);
+    },
+
+    /**
+     * 工具栏缓存状态 chip（novelreader:cacheprog 事件源为 NR.bookSaver）：
+     * running 显示「缓存中 N」；done 显示「已缓存全书」3s 后淡出；paused 隐藏。
+     */
+    _onCacheProg(d) {
+      const state = this.state;
+      const chip = state && state.cacheChip;
+      if (!chip) return;
+      clearTimeout(state.cacheChipTimer);
+      if (d.paused) {
+        chip.classList.add('nr-fade');
+        return;
+      }
+      if (d.done) {
+        chip.textContent = '已缓存全书';
+        chip.classList.remove('nr-fade');
+        state.cacheChipTimer = setTimeout(() => {
+          if (this.state && this.state.cacheChip) this.state.cacheChip.classList.add('nr-fade');
+        }, 3000);
+        return;
+      }
+      chip.textContent = '缓存中 ' + (d.count || 0);
+      chip.classList.remove('nr-fade');
     },
 
     /**

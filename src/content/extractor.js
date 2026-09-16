@@ -328,16 +328,24 @@
    *   prevUrl: ?string, nextUrl: ?string, indexUrl: ?string, url: string
    * }>}
    */
-  NR.extractDoc = async function (doc, url) {
+  /**
+   * @param {Document} doc
+   * @param {string} url
+   * @param {{minCjk?: number}} [opts] 降低正文量门槛（分页式站点的章末短分页只有一两百字，
+   *   仍远高于错误壳/空页的十几个字）。仅建议在已确认是章节链 URL 的抓取路径传入
+   *   （next-chapter getChapter）；对任意页面扫描（isNovelLike 等）不要降低门槛。
+   */
+  NR.extractDoc = async function (doc, url, opts) {
     try {
       await NR.loadSiteRules().catch(() => {});
       const rules = NR.getRulesFor(url);
+      const minCjk = opts && opts.minCjk > 0 ? opts.minCjk : 0;
       let via = 'rule';
       let readabilityTitle = '';
 
       // ---- 第一层：站点规则选择器 ----
       let contentEl =
-        (rules.contentSelector && NR.findContentBySelectors(doc, rules.contentSelector, 300)) || null;
+        (rules.contentSelector && NR.findContentBySelectors(doc, rules.contentSelector, minCjk || 300)) || null;
 
       // ---- 第二层：Readability（克隆文档，避免破坏原页面） ----
       if (!contentEl && typeof Readability === 'function') {
@@ -350,7 +358,7 @@
           if (article && article.content) {
             const div = doc.createElement('div');
             div.innerHTML = DOMPurify.sanitize(article.content);
-            if (NR.cjkCount(div.textContent) > 200) {
+            if (NR.cjkCount(div.textContent) > (minCjk ? Math.min(200, minCjk) : 200)) {
               contentEl = div;
               via = 'readability';
               readabilityTitle = article.title || '';

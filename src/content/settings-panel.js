@@ -179,6 +179,9 @@
     frag.appendChild(check('clickPaging', '点击上下区域翻页', () => s.clickPaging, (v) => setAndSave({ clickPaging: v })));
     frag.appendChild(check('blockAdsOnRead', '阅读时只放行本站请求', () => s.blockAdsOnRead, (v) => setAndSave({ blockAdsOnRead: v })));
     frag.appendChild(check('navLock', '阅读时锁定页面（禁止跳转/弹窗）', () => s.navLock, (v) => setAndSave({ navLock: v })));
+    frag.appendChild(
+      check('cacheBook', '阅读时后台缓存整本书（后台依次抓取后续章节，消耗流量）', () => s.cacheBook, (v) => setAndSave({ cacheBook: v }))
+    );
 
     const reset = document.createElementNS(ns, 'button');
     reset.className = 'nr-reset';
@@ -189,6 +192,84 @@
       NR.toast('已恢复默认设置');
     });
     frag.appendChild(reset);
+
+    // ---- 缓存管理：整本持久缓存的书列表（异步载入，删除/清空后刷新） ----
+    const cacheDivider = document.createElementNS(ns, 'div');
+    cacheDivider.className = 'nr-divider';
+    frag.appendChild(cacheDivider);
+
+    const cacheTitle = document.createElementNS(ns, 'div');
+    cacheTitle.className = 'nr-panel-title';
+    cacheTitle.textContent = '缓存管理';
+    frag.appendChild(cacheTitle);
+
+    const cacheListEl = document.createElementNS(ns, 'div');
+    frag.appendChild(cacheListEl);
+
+    const clearAllBtn = document.createElementNS(ns, 'button');
+    clearAllBtn.className = 'nr-reset';
+    clearAllBtn.textContent = '清空全部缓存';
+    clearAllBtn.addEventListener('click', async () => {
+      try {
+        await NR.chapterCache.clearAll();
+      } catch (e) {
+        /* 尽力而为：失败静默 */
+      }
+      NR.toast('已清空全部章节缓存');
+      renderCacheList();
+    });
+    frag.appendChild(clearAllBtn);
+
+    function fmtMB(bytes) {
+      const mb = (bytes || 0) / (1024 * 1024);
+      return (mb >= 10 ? String(Math.round(mb)) : mb.toFixed(1)) + ' MB';
+    }
+
+    async function renderCacheList() {
+      let books = [];
+      try {
+        if (NR.chapterCache) books = (await NR.chapterCache.listBooks()) || [];
+      } catch (e) {
+        books = []; // 缓存不可用时显示为空，不影响面板其余功能
+      }
+      cacheListEl.textContent = '';
+      if (!books.length) {
+        const empty = document.createElementNS(ns, 'div');
+        empty.className = 'nr-cache-empty';
+        empty.textContent = '暂无整本缓存';
+        cacheListEl.appendChild(empty);
+        return;
+      }
+      for (const b of books) {
+        const rowEl = document.createElementNS(ns, 'div');
+        rowEl.className = 'nr-cache-row';
+        const main = document.createElementNS(ns, 'div');
+        main.className = 'nr-cache-main';
+        const name = document.createElementNS(ns, 'div');
+        name.className = 'nr-cache-name';
+        name.textContent = b.title || b.bookKey || '未命名';
+        name.title = b.bookKey || '';
+        const meta = document.createElementNS(ns, 'div');
+        meta.className = 'nr-cache-meta';
+        meta.textContent = '已缓存 ' + (b.count || 0) + ' 章 · 约 ' + fmtMB(b.size) + (b.done ? ' · 全本' : '');
+        const del = document.createElementNS(ns, 'button');
+        del.className = 'nr-cache-del';
+        del.textContent = '删除';
+        del.addEventListener('click', async () => {
+          try {
+            await NR.chapterCache.deleteBook(b.bookKey);
+          } catch (e) {
+            /* 尽力而为：失败静默 */
+          }
+          renderCacheList();
+        });
+        main.appendChild(name);
+        main.appendChild(meta);
+        rowEl.appendChild(main);
+        rowEl.appendChild(del);
+        cacheListEl.appendChild(rowEl);
+      }
+    }
 
     el.appendChild(frag);
 
@@ -228,6 +309,8 @@
       }
     }
     syncVals();
+    // 缓存列表数据异步载入（不阻塞面板打开），删除/清空后由回调自行刷新
+    renderCacheList();
     // select 的 data-key 均在构建时写入，refresh 直接按 key 同步；
     // 设置也可能被其他上下文改变（storage.sync 热更新、快捷键改字号）→ 订阅刷新
     const unsubscribe = NR.subscribeSettings(refresh);
